@@ -4,38 +4,38 @@
 
 void kernel_main() {
     uint32_t n_tiles = get_arg_val<uint32_t>(0);
-    uint32_t start_tile_id = get_arg_val<uint32_t>(1);
-    uint32_t N = get_arg_val<uint32_t>(2);
+    uint32_t N = get_arg_val<uint32_t>(1);
 
-    uint32_t pxi_addr = get_arg_val<uint32_t>(3);
-    uint32_t pxj_addr = get_arg_val<uint32_t>(4);
-    uint32_t pyi_addr = get_arg_val<uint32_t>(5);
-    uint32_t pyj_addr = get_arg_val<uint32_t>(6);
-    uint32_t pzi_addr = get_arg_val<uint32_t>(7);
-    uint32_t pzj_addr = get_arg_val<uint32_t>(8);
+    uint32_t pxi_addr = get_arg_val<uint32_t>(2);
+    uint32_t pxj_addr = get_arg_val<uint32_t>(3);
+    uint32_t pyi_addr = get_arg_val<uint32_t>(4);
+    uint32_t pyj_addr = get_arg_val<uint32_t>(5);
+    uint32_t pzi_addr = get_arg_val<uint32_t>(6);
+    uint32_t pzj_addr = get_arg_val<uint32_t>(7);
 
-    uint32_t vxi_addr = get_arg_val<uint32_t>(9);
-    uint32_t vxj_addr = get_arg_val<uint32_t>(10);
-    uint32_t vyi_addr = get_arg_val<uint32_t>(11);
-    uint32_t vyj_addr = get_arg_val<uint32_t>(12);
-    uint32_t vzi_addr = get_arg_val<uint32_t>(13);
-    uint32_t vzj_addr = get_arg_val<uint32_t>(14);
-    uint32_t pwj_addr = get_arg_val<uint32_t>(15);
+    uint32_t vxi_addr = get_arg_val<uint32_t>(8);
+    uint32_t vxj_addr = get_arg_val<uint32_t>(9);
+    uint32_t vyi_addr = get_arg_val<uint32_t>(10);
+    uint32_t vyj_addr = get_arg_val<uint32_t>(11);
+    uint32_t vzi_addr = get_arg_val<uint32_t>(12);
+    uint32_t vzj_addr = get_arg_val<uint32_t>(13);
+    uint32_t pwj_addr = get_arg_val<uint32_t>(14);
 
-    constexpr uint32_t cb_pxi = get_compile_time_arg_val(0);
-    constexpr uint32_t cb_pxj = get_compile_time_arg_val(1);
-    constexpr uint32_t cb_pyi = get_compile_time_arg_val(2);
-    constexpr uint32_t cb_pyj = get_compile_time_arg_val(3);
-    constexpr uint32_t cb_pzi = get_compile_time_arg_val(4);
-    constexpr uint32_t cb_pzj = get_compile_time_arg_val(5);
+    constexpr uint32_t cb_pxi = tt::CBIndex::c_0;
+    constexpr uint32_t cb_pxj = tt::CBIndex::c_1;
+    constexpr uint32_t cb_pyi = tt::CBIndex::c_2;
+    constexpr uint32_t cb_pyj = tt::CBIndex::c_3;
+    constexpr uint32_t cb_pzi = tt::CBIndex::c_4;
+    constexpr uint32_t cb_pzj = tt::CBIndex::c_5;
 
-    constexpr uint32_t cb_vxi = get_compile_time_arg_val(6);
-    constexpr uint32_t cb_vxj = get_compile_time_arg_val(7);
-    constexpr uint32_t cb_vyi = get_compile_time_arg_val(8);
-    constexpr uint32_t cb_vyj = get_compile_time_arg_val(9);
-    constexpr uint32_t cb_vzi = get_compile_time_arg_val(10);
-    constexpr uint32_t cb_vzj = get_compile_time_arg_val(11);
-    constexpr uint32_t cb_pwj = get_compile_time_arg_val(12);
+    constexpr uint32_t cb_vxi = tt::CBIndex::c_6;
+    constexpr uint32_t cb_vxj = tt::CBIndex::c_7;
+    constexpr uint32_t cb_vyi = tt::CBIndex::c_8;
+    constexpr uint32_t cb_vyj = tt::CBIndex::c_9;
+    constexpr uint32_t cb_vzi = tt::CBIndex::c_10;
+    constexpr uint32_t cb_vzj = tt::CBIndex::c_11;
+
+    constexpr uint32_t cb_pwj = tt::CBIndex::c_12;
 
     const uint32_t tile_size_bytes = get_tile_size(cb_pxi);
 
@@ -53,10 +53,8 @@ void kernel_main() {
     const InterleavedAddrGenFast<true> vzi = {.bank_base_address = vzi_addr, .page_size = tile_size_bytes, .data_format = DataFormat::Float32, };
     const InterleavedAddrGenFast<true> vzj = {.bank_base_address = vzj_addr, .page_size = tile_size_bytes, .data_format = DataFormat::Float32, };
     const InterleavedAddrGenFast<true> pwj = {.bank_base_address = pwj_addr, .page_size = tile_size_bytes, .data_format = DataFormat::Float32, };
-
-    const uint32_t end_tile_id = start_tile_id + n_tiles;
-
-    for (uint32_t i = start_tile_id; i < end_tile_id; i++) {
+    
+    for (uint32_t i = 0; i < n_tiles; i++) {
         {
         cb_reserve_back(cb_pxi, 1);
         cb_reserve_back(cb_pyi, 1);
@@ -140,3 +138,4 @@ void kernel_main() {
         }
     }
 }
+

@@ -1,11 +1,12 @@
 #include "utils.h"
 #include <iostream>
 
-#if defined(_WH)
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
 #include "nbody_tt_integration.h"
 
 using namespace tt;
 using namespace tt::tt_metal;
+using namespace tt::tt_metal::distributed;
 
 namespace NBodyProject {
 
@@ -25,14 +26,67 @@ CBHandle MakeCircularBuffer(
 }
 
 std::shared_ptr<Buffer> MakeBufferFP32(IDevice* device, uint32_t n_tiles, bool sram) {
-    constexpr uint32_t tile_size = 4 * tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT;
+    const uint32_t tile_bytes = tt::tt_metal::detail::TileSize(tt::DataFormat::Float32);
+    // constexpr uint32_t tile_size = 4 * tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT;
     const uint32_t page_tiles = sram ? n_tiles : 1;
-    return MakeBuffer(device, tile_size * n_tiles, page_tiles * tile_size, sram);
+    return MakeBuffer(device, tile_bytes * n_tiles, page_tiles * tile_bytes, sram);
 }
 
 CBHandle MakeCircularBufferFP32(Program& program, const CoreSpec& core, tt::CBIndex cb, uint32_t n_tiles) {
-    constexpr uint32_t tile_size = 4 * tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT;
-    return MakeCircularBuffer(program, core, cb, n_tiles * tile_size, tile_size, tt::DataFormat::Float32);
+    const uint32_t tile_bytes = tt::tt_metal::detail::TileSize(tt::DataFormat::Float32);
+    // constexpr uint32_t tile_size = 4 * tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT;
+    return MakeCircularBuffer(program, core, cb, n_tiles * tile_bytes, tile_bytes, tt::DataFormat::Float32);
+}
+
+std::shared_ptr<MeshBuffer> MakeMeshBuffer(const std::shared_ptr<MeshDevice>& mesh, const uint32_t tiles_per_device, const uint32_t total_num_tiles) { 
+    constexpr uint32_t TILE_HEIGHT = tt::constants::TILE_HEIGHT;
+    constexpr uint32_t TILE_WIDTH = tt::constants::TILE_WIDTH;
+    auto tile_size = TILE_WIDTH * TILE_HEIGHT;
+    auto tile_size_bytes = tile_size * sizeof(float);
+    auto buffer_size_bytes = total_num_tiles * tile_size_bytes;
+
+    auto shard_shape = Shape2D{
+        TILE_HEIGHT,
+        TILE_WIDTH * tiles_per_device
+    };
+    
+    auto distributed_buffer_shape = Shape2D{
+        TILE_HEIGHT,
+        TILE_WIDTH * total_num_tiles 
+    };
+
+    auto local_buffer_config = DeviceLocalBufferConfig{
+        .page_size = tile_size_bytes,
+        .buffer_type = BufferType::DRAM
+        // .bottom_up = false
+    };
+
+    auto distributed_buffer_config = tt::tt_metal::distributed::ShardedBufferConfig{
+        .global_size = buffer_size_bytes,
+        .global_buffer_shape = distributed_buffer_shape,
+        .shard_shape = shard_shape,
+        .shard_orientation = ShardOrientation::ROW_MAJOR};
+
+    return MeshBuffer::create(distributed_buffer_config, local_buffer_config, mesh.get());
+}
+
+std::shared_ptr<MeshBuffer> MakeReplicatedBuffer(const std::shared_ptr<MeshDevice>& mesh, const uint32_t rep_num_tiles) {
+    constexpr uint32_t TILE_HEIGHT = tt::constants::TILE_HEIGHT;
+    constexpr uint32_t TILE_WIDTH = tt::constants::TILE_WIDTH;
+    auto tile_size = TILE_WIDTH * TILE_HEIGHT;
+    auto tile_size_bytes = tile_size * sizeof(float);
+
+    ReplicatedBufferConfig replicated_config{
+        .size = tile_size_bytes * rep_num_tiles
+    };
+
+    DeviceLocalBufferConfig device_local_config{
+        .page_size = tile_size_bytes,
+        .buffer_type = BufferType::DRAM
+        // .bottom_up = false
+    };
+
+    return MeshBuffer::create(replicated_config, device_local_config, mesh.get());
 }
 
 std::string next_arg(int& i, int argc, char** argv) {

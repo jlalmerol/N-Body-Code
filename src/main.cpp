@@ -13,7 +13,41 @@
 int main(int argc, char* argv[]) {
   MPI_Init(&argc, &argv);
 
-  int N = 20480;
+  int N = 16384;
+  int Ncycle = 10;
+
+  for (int i = 1; i < argc; ++i) {
+      std::string arg = argv[i];
+
+      if (arg == "--N" && i + 1 < argc) {
+          try {
+               N = std::stoi(argv[++i]);
+               if (N <= 0) throw std::invalid_argument("N must be positive.");
+          } catch (const std::exception& e) {
+               std::cerr << "Error parsing --N: " << e.what() << std::endl;
+               MPI_Finalize();
+               return 1;
+          }
+      }
+      else if (arg == "--Ncycle" && i + 1 < argc) {
+          try {
+               Ncycle = std::stoi(argv[++i]);
+               if (Ncycle <= 0) throw std::invalid_argument("Ncycle must be positive.");
+           } catch (const std::exception& e) {
+               std::cerr << "Error parsing --Ncycle: " << e.what() << std::endl;
+               MPI_Finalize();
+               return 1;
+           }
+       }
+       else {
+             std::cerr << "Unknown or incomplete argument: " << arg << std::endl;
+             std::cerr << "Usage: ./program [--N <value>] [--Ncycle <value>]" << std::endl;
+             MPI_Finalize();
+             return 1;
+       }
+   }
+
+/*
   if (argc > 1) {
     try {
       N = std::stoi(argv[1]);
@@ -28,9 +62,14 @@ int main(int argc, char* argv[]) {
       return 1;
     }
   }
+*/  
   
   int rank;
-  int Ncycle = 3;
+  if (rank == 0) {
+      std::cout << "Using N = " << N << ", Ncycle = " << Ncycle << std::endl;
+  }
+
+  //int Ncycle = 10;
   double vmax = 1.0;
   double mmin = 0.01;
   double mmax = 1.0;
@@ -92,6 +131,7 @@ int main(int argc, char* argv[]) {
 
   if (rank == 0) {
     std::cout << "WALL time: " << totaltime << " seconds" << std::endl;
+    std::cout << "Total active cores: " << nbody.sys.num_cores << std::endl;
     std::cout << std::endl;
     double end = timer();
     std::cout << std::fixed << std::setprecision(9);

@@ -2,8 +2,14 @@
 
 #include <tt-metalium/core_coord.hpp>
 #include <tt-metalium/host_api.hpp>
-#include <tt-metalium/device_impl.hpp>
 #include <tt-metalium/work_split.hpp>
+#include <tt-metalium/device.hpp>
+
+#include "hostdevcommon/profiler_common.h"
+#include "tools/mem_bench/host_utils.hpp"
+#include <tt-metalium/distributed.hpp>
+#include "impl/context/metal_context.hpp"
+#include <tt-metalium/tensor_accessor_args.hpp>
 
 #include <cstddef>
 #include <cstdint>

@@ -180,32 +180,31 @@ void muladd_tile(
 namespace NAMESPACE {
 void MAIN {
 	uint32_t n_tiles = get_arg_val<uint32_t>(0);
-	uint32_t start_tile_id = get_arg_val<uint32_t>(1);
-	uint32_t N = get_arg_val<uint32_t>(2);
+	uint32_t N = get_arg_val<uint32_t>(1);
 
-	constexpr auto cb_pxi = get_compile_time_arg_val(0);
-	constexpr auto cb_pxj = get_compile_time_arg_val(1);
-	constexpr auto cb_pyi = get_compile_time_arg_val(2);
-	constexpr auto cb_pyj = get_compile_time_arg_val(3);
-	constexpr auto cb_pzi = get_compile_time_arg_val(4);
-	constexpr auto cb_pzj = get_compile_time_arg_val(5);
+	constexpr auto cb_pxi = tt::CBIndex::c_0;
+	constexpr auto cb_pxj = tt::CBIndex::c_1;
+	constexpr auto cb_pyi = tt::CBIndex::c_2;
+	constexpr auto cb_pyj = tt::CBIndex::c_3;
+	constexpr auto cb_pzi = tt::CBIndex::c_4;
+	constexpr auto cb_pzj = tt::CBIndex::c_5;
 
-	constexpr auto cb_vxi = get_compile_time_arg_val(6);
-	constexpr auto cb_vxj = get_compile_time_arg_val(7);
-	constexpr auto cb_vyi = get_compile_time_arg_val(8);
-	constexpr auto cb_vyj = get_compile_time_arg_val(9);
-	constexpr auto cb_vzi = get_compile_time_arg_val(10);
-	constexpr auto cb_vzj = get_compile_time_arg_val(11);
+	constexpr auto cb_vxi = tt::CBIndex::c_6;
+	constexpr auto cb_vxj = tt::CBIndex::c_7;
+	constexpr auto cb_vyi = tt::CBIndex::c_8;
+	constexpr auto cb_vyj = tt::CBIndex::c_9;
+	constexpr auto cb_vzi = tt::CBIndex::c_10;
+	constexpr auto cb_vzj = tt::CBIndex::c_11;
 
-	constexpr auto cb_pwj = get_compile_time_arg_val(12);
+	constexpr auto cb_pwj = tt::CBIndex::c_12;
 
-	constexpr auto cb_ax = get_compile_time_arg_val(13);
-	constexpr auto cb_ay = get_compile_time_arg_val(14);
-	constexpr auto cb_az = get_compile_time_arg_val(15);
+	constexpr auto cb_ax = tt::CBIndex::c_13;
+	constexpr auto cb_ay = tt::CBIndex::c_14;
+	constexpr auto cb_az = tt::CBIndex::c_15;
 
-	constexpr auto cb_adx = get_compile_time_arg_val(16);
-	constexpr auto cb_ady = get_compile_time_arg_val(17);
-	constexpr auto cb_adz = get_compile_time_arg_val(18);
+	constexpr auto cb_adx = tt::CBIndex::c_16;
+	constexpr auto cb_ady = tt::CBIndex::c_17;
+	constexpr auto cb_adz = tt::CBIndex::c_18;
 
 	constexpr auto cb_axt = tt::CBIndex::c_19;
 	constexpr auto cb_ayt = tt::CBIndex::c_20;
@@ -224,8 +223,6 @@ void MAIN {
 		
 	constexpr uint32_t dst_reg = 0;
 
-	const uint32_t end_tile_id = start_tile_id + n_tiles;
-
 	unary_op_init_common(cb_pxi, cb_ax);
 	fill_tile_init();
 	sub_binary_tile_init();
@@ -234,7 +231,7 @@ void MAIN {
 	rsqrt_tile_init();
 	mul_binary_tile_init();
 
-  for (uint32_t i = start_tile_id; i < end_tile_id; i++) {
+	for (uint32_t i = 0; i < n_tiles; i++) {
 		DeviceZoneScopedN("NBCOMPUTE");
 		DeviceTimestampedData("computetime", i + ((uint64_t)1 << 32));
 		DeviceRecordEvent(i);

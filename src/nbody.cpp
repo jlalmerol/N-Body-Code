@@ -231,7 +231,7 @@ void NBody::timestepping(){
   start =  omp_get_wtime();
   force_calculation(h_par_x, h_par_y, h_par_z, h_par_w, h_vel_x, h_vel_y, h_vel_z, h_acc1_x, h_acc1_y, h_acc1_z, h_a1dot_x, h_a1dot_y, h_a1dot_z, sys);
   end =  omp_get_wtime();
-#if defined(_WH)
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
   sys.t_eval = sys.kernel_time;
 #else
   sys.t_eval = end - start;
@@ -309,7 +309,7 @@ void NBody::cycle(int ncycle){
   start = omp_get_wtime();
   force_calculation(h_par_x, h_par_y, h_par_z, h_par_w, h_vel_x, h_vel_y, h_vel_z, h_acc_x, h_acc_y, h_acc_z, h_adot_x, h_adot_y, h_adot_z, sys);
   end = omp_get_wtime();
-#if defined(_WH)
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
   sys.t_eval_init = sys.kernel_time;
 #else
   sys.t_eval_init = end - start;

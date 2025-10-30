@@ -6,19 +6,21 @@
 #include <sys/types.h>
 #include <sys/time.h>
 
-#if defined(_WH)
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
 #include "nbody_tt_integration.h"
 #endif
 
 #define PRT 5
-#define EPS2 1.0e-8
+#define EPS2 1.0e-7
 
-#if defined(_WH) 
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
 namespace NBodyProject {
-	std::shared_ptr<Buffer> MakeBuffer(tt::tt_metal::v0::IDevice* device, uint32_t size, uint32_t page_size, bool sram);
+	std::shared_ptr<Buffer> MakeBuffer(tt::tt_metal::IDevice* device, uint32_t size, uint32_t page_size, bool sram);
 	CBHandle MakeCircularBuffer(Program& program, const CoreSpec& core, tt::CBIndex cb, uint32_t size, uint32_t page_size, tt::DataFormat format);
-	std::shared_ptr<Buffer> MakeBufferFP32(tt::tt_metal::v0::IDevice* device, uint32_t n_tiles, bool sram);
+	std::shared_ptr<Buffer> MakeBufferFP32(tt::tt_metal::IDevice* device, uint32_t n_tiles, bool sram);
 	CBHandle MakeCircularBufferFP32(Program& program, const CoreSpec& core, tt::CBIndex cb, uint32_t n_tiles);
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> MakeMeshBuffer(const std::shared_ptr<tt::tt_metal::distributed::MeshDevice>& mesh, const uint32_t tiles_per_device, const uint32_t total_num_tiles);
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> MakeReplicatedBuffer(const std::shared_ptr<tt::tt_metal::distributed::MeshDevice>& mesh, const uint32_t rep_num_tiles);
 	std::string next_arg(int& i, int argc, char** argv);
 	void help(std::string_view program_name);
 } // namespace NBodyProject
@@ -47,6 +49,7 @@ struct Sys {
     double finE;
     double Q;
     double Err;
+    int num_cores;
 };
 
 double InvSqrt2D(double x);
