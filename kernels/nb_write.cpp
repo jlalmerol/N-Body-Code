@@ -21,7 +21,6 @@ void kernel_main() {
     constexpr uint32_t cb_adz = get_compile_time_arg_val(5);
 
     const uint32_t tile_size_bytes = get_tile_size(cb_ax);
-
     const InterleavedAddrGenFast<true> ax = { .bank_base_address = ax_addr, .page_size = tile_size_bytes, .data_format = DataFormat::Float32, };
     const InterleavedAddrGenFast<true> ay = { .bank_base_address = ay_addr, .page_size = tile_size_bytes, .data_format = DataFormat::Float32, };
     const InterleavedAddrGenFast<true> az = { .bank_base_address = az_addr, .page_size = tile_size_bytes, .data_format = DataFormat::Float32, };
@@ -68,4 +67,3 @@ void kernel_main() {
 	cb_pop_front(cb_adz, 1);
     }
 }
-

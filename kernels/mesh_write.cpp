@@ -2,14 +2,15 @@
 
 void kernel_main() {
     uint32_t n_tiles = get_arg_val<uint32_t>(0);
+    uint32_t first_tile = get_arg_val<uint32_t>(1);
 
-    uint32_t ax_addr = get_arg_val<uint32_t>(1);
-    uint32_t ay_addr = get_arg_val<uint32_t>(2);
-    uint32_t az_addr = get_arg_val<uint32_t>(3);
+    uint32_t ax_addr = get_arg_val<uint32_t>(2);
+    uint32_t ay_addr = get_arg_val<uint32_t>(3);
+    uint32_t az_addr = get_arg_val<uint32_t>(4);
 
-    uint32_t adx_addr = get_arg_val<uint32_t>(4);
-    uint32_t ady_addr = get_arg_val<uint32_t>(5);
-    uint32_t adz_addr = get_arg_val<uint32_t>(6);
+    uint32_t adx_addr = get_arg_val<uint32_t>(5);
+    uint32_t ady_addr = get_arg_val<uint32_t>(6);
+    uint32_t adz_addr = get_arg_val<uint32_t>(7);
 
     constexpr auto cb_ax = tt::CBIndex::c_13;
     constexpr auto cb_ay = tt::CBIndex::c_14;
@@ -46,13 +47,14 @@ void kernel_main() {
         uint32_t cb_ady_addr = get_read_ptr(cb_ady);
         uint32_t cb_adz_addr = get_read_ptr(cb_adz);
 
-        noc_async_write_tile(i, ax, cb_ax_addr);
-        noc_async_write_tile(i, ay, cb_ay_addr);
-        noc_async_write_tile(i, az, cb_az_addr);
+        const uint32_t target_tile = first_tile + i;
+        noc_async_write_tile(target_tile, ax, cb_ax_addr);
+        noc_async_write_tile(target_tile, ay, cb_ay_addr);
+        noc_async_write_tile(target_tile, az, cb_az_addr);
 
-        noc_async_write_tile(i, adx, cb_adx_addr);
-        noc_async_write_tile(i, ady, cb_ady_addr);
-        noc_async_write_tile(i, adz, cb_adz_addr);
+        noc_async_write_tile(target_tile, adx, cb_adx_addr);
+        noc_async_write_tile(target_tile, ady, cb_ady_addr);
+        noc_async_write_tile(target_tile, adz, cb_adz_addr);
 
         noc_async_write_barrier();
 
@@ -65,4 +67,3 @@ void kernel_main() {
         cb_pop_front(cb_adz, 1);
     }
 }
-

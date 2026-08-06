@@ -1,17 +1,16 @@
 #include <cstdint>
-#include "compute_kernel_api/tile_move_copy.h"
-#include "compute_kernel_api/eltwise_unary/sfpu_split_includes.h"
-#include "compute_kernel_api/eltwise_binary.h"
-#include "compute_kernel_api/common.h"
-#include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
-#include "compute_kernel_api/eltwise_binary_sfpu.h"
-#include "compute_kernel_api/binary_bitwise_sfpu.h"
-#include "compute_kernel_api/binary_shift.h"
-#include "compute_kernel_api.h"
-#include "compute_kernel_api/eltwise_unary/fill.h"
-#include "compute_kernel_api/eltwise_unary/rsqrt.h"
+#include "api/compute/tile_move_copy.h"
+#include "api/compute/eltwise_unary/sfpu_split_includes.h"
+#include "api/compute/eltwise_binary.h"
+#include "api/compute/common.h"
+#include "api/compute/eltwise_unary/eltwise_unary.h"
+#include "api/compute/eltwise_binary_sfpu.h"
+#include "api/compute/binary_bitwise_sfpu.h"
+#include "api/compute/binary_shift.h"
+#include "api/compute/compute_kernel_api.h"
+#include "api/compute/eltwise_unary/fill.h"
+#include "api/compute/eltwise_unary/rsqrt.h"
 
-#include "debug/dprint.h"
 #include "tools/profiler/kernel_profiler.hpp"
 #include "llk_math_eltwise_ternary_sfpu_params.h"
 
@@ -25,7 +24,7 @@ void qdotq_part_face_unary() {
 #endif // TRISC_MATH
 
 void qdotq_part_tile(const uint32_t dst_index_out) {
-	MATH(_llk_math_eltwise_unary_sfpu_params_<false>(
+	MATH(_llk_math_eltwise_unary_sfpu_params_(
 			qdotq_part_face_unary, dst_index_out, VectorMode::RC));
 }
 
@@ -65,7 +64,7 @@ void squared_dist_tile(
 	const uint32_t dst_index_dz,
 	const uint32_t dst_index_out) 
 {
-	MATH((_llk_math_eltwise_ternary_sfpu_params_<false>(
+	MATH((_llk_math_eltwise_ternary_sfpu_params_(
 			squared_dist_tile_face, 
 			dst_index_dx, dst_index_dy, dst_index_dz, dst_index_out)));
 }
@@ -100,7 +99,7 @@ void add_ternary_tile(
 	const uint32_t dst_index_dz,
 	const uint32_t dst_index_out) 
 {
-	MATH((_llk_math_eltwise_ternary_sfpu_params_<false>(
+	MATH((_llk_math_eltwise_ternary_sfpu_params_(
 			add_ternary_tile_face, 
 			dst_index_dx, dst_index_dy, dst_index_dz, dst_index_out)));
 }
@@ -136,7 +135,7 @@ void update_acc_tile(
 	const uint32_t dst_index_dz,
 	const uint32_t dst_index_out) 
 {
-	MATH((_llk_math_eltwise_ternary_sfpu_params_<false>(
+	MATH((_llk_math_eltwise_ternary_sfpu_params_(
 			update_acc_tile_face, 
 			dst_index_dx, dst_index_dy, dst_index_dz, dst_index_out)));
 }
@@ -172,13 +171,12 @@ void muladd_tile(
 	const uint32_t dst_index_in2,  // qdotq
 	const uint32_t dst_index_out)  // A
 {
-	MATH((_llk_math_eltwise_ternary_sfpu_params_<false>(
+	MATH((_llk_math_eltwise_ternary_sfpu_params_(
 			muladd_tile_face, 
 			dst_index_in0, dst_index_in1, dst_index_in2, dst_index_out)));
 }
 
-namespace NAMESPACE {
-void MAIN {
+void kernel_main() {
 	uint32_t n_tiles = get_arg_val<uint32_t>(0);
 	uint32_t N = get_arg_val<uint32_t>(1);
 
@@ -576,4 +574,3 @@ void MAIN {
 
     }
 	}
-}  // namespace NAMESPACE

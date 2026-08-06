@@ -3,7 +3,7 @@
 #include "omp.h"
 #include <stdlib.h>
 
-#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
+#if defined(_WH_MULTIHOST) || defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
 #pragma message("Compiling for Wormhole")
 #else
 #pragma message("Using default force_calculation declaration")
@@ -17,3 +17,5 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
                       double* __restrict h_vel_z, double* __restrict h_acc_x, double* __restrict h_acc_y, 
                       double* __restrict h_acc_z, double* __restrict h_adot_x, double* __restrict h_adot_y, 
                       double* __restrict h_adot_z, Sys& sys);
+
+void shutdown_force_calculation_backend();

@@ -1,5 +1,4 @@
-#include "dataflow_api.h"
-#include "debug/dprint.h"
+#include "api/dataflow/dataflow_api.h"
 #include <cstdint>
 
 void kernel_main() {

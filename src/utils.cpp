@@ -1,7 +1,7 @@
 #include "utils.h"
 #include <iostream>
 
-#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
+#if defined(_WH_MULTIHOST) || defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
 #include "nbody_tt_integration.h"
 
 using namespace tt;
@@ -26,14 +26,14 @@ CBHandle MakeCircularBuffer(
 }
 
 std::shared_ptr<Buffer> MakeBufferFP32(IDevice* device, uint32_t n_tiles, bool sram) {
-    const uint32_t tile_bytes = tt::tt_metal::detail::TileSize(tt::DataFormat::Float32);
+    const uint32_t tile_bytes = tt::tile_size(tt::DataFormat::Float32);
     // constexpr uint32_t tile_size = 4 * tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT;
     const uint32_t page_tiles = sram ? n_tiles : 1;
     return MakeBuffer(device, tile_bytes * n_tiles, page_tiles * tile_bytes, sram);
 }
 
 CBHandle MakeCircularBufferFP32(Program& program, const CoreSpec& core, tt::CBIndex cb, uint32_t n_tiles) {
-    const uint32_t tile_bytes = tt::tt_metal::detail::TileSize(tt::DataFormat::Float32);
+    const uint32_t tile_bytes = tt::tile_size(tt::DataFormat::Float32);
     // constexpr uint32_t tile_size = 4 * tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT;
     return MakeCircularBuffer(program, core, cb, n_tiles * tile_bytes, tile_bytes, tt::DataFormat::Float32);
 }
@@ -136,9 +136,9 @@ double compute_kinetic(double* h_par_w, double* h_vel_x, double* h_vel_y, double
 
 double compute_potential(double* h_par_x, double* h_par_y, double* h_par_z, double* h_par_w, int N) {
     double U = 0.0;
+    #pragma omp parallel for reduction(+:U) schedule(static)
     for (int i = 0; i < N; i++) {
         double tmp = 0.0;
-        #pragma omp parallel for reduction(+:tmp)
         for (int j = i + 1; j < N; j++) {
             double rx2 = (h_par_x[i] - h_par_x[j]) * (h_par_x[i] - h_par_x[j]);
             double ry2 = (h_par_y[i] - h_par_y[j]) * (h_par_y[i] - h_par_y[j]);

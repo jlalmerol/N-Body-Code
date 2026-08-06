@@ -64,7 +64,9 @@ int main(int argc, char* argv[]) {
   }
 */  
   
-  int rank;
+  int rank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
   if (rank == 0) {
       std::cout << "Using N = " << N << ", Ncycle = " << Ncycle << std::endl;
   }
@@ -75,18 +77,22 @@ int main(int argc, char* argv[]) {
   double mmax = 1.0;
   double rmax = 1.0;
 
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
+  MPI_Barrier(MPI_COMM_WORLD);
+  const double timestamp_start = timer();
   double start = MPI_Wtime();
   NBody nbody(N, vmax, rmax, mmin, mmax); 
   nbody.cycle(Ncycle);
+#if defined(_WH_GEMM_MULTIHOST)
+  shutdown_force_calculation_backend();
+#endif
+  MPI_Barrier(MPI_COMM_WORLD);
   double end = MPI_Wtime();
+  const double timestamp_end = timer();
   double totaltime = end - start;
 
   if (rank == 0) {
-    double now = timer();
     std::cout << std::fixed << std::setprecision(9);
-    std::cout << "Time stamp(start): " << now << std::endl;
+    std::cout << "Time stamp(start): " << timestamp_start << std::endl;
     std::cout << std::endl;
 
     std::cout << std::setw(COLWIDTH) << "N"
@@ -133,9 +139,8 @@ int main(int argc, char* argv[]) {
     std::cout << "WALL time: " << totaltime << " seconds" << std::endl;
     std::cout << "Total active cores: " << nbody.sys.num_cores << std::endl;
     std::cout << std::endl;
-    double end = timer();
     std::cout << std::fixed << std::setprecision(9);
-    std::cout << "Time stamp (end): " << end << std::endl;
+    std::cout << "Time stamp (end): " << timestamp_end << std::endl;
   }
   
   MPI_Finalize();

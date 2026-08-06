@@ -6,14 +6,14 @@
 #include <sys/types.h>
 #include <sys/time.h>
 
-#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
+#if defined(_WH_MULTIHOST) || defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
 #include "nbody_tt_integration.h"
 #endif
 
 #define PRT 5
 #define EPS2 1.0e-7
 
-#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
+#if defined(_WH_MULTIHOST) || defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
 namespace NBodyProject {
 	std::shared_ptr<Buffer> MakeBuffer(tt::tt_metal::IDevice* device, uint32_t size, uint32_t page_size, bool sram);
 	CBHandle MakeCircularBuffer(Program& program, const CoreSpec& core, tt::CBIndex cb, uint32_t size, uint32_t page_size, tt::DataFormat format);

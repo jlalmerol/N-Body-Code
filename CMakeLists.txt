@@ -1,25 +1,25 @@
 cmake_minimum_required(VERSION 3.10)
 
-set(CMAKE_CXX_COMPILER mpicxx)
-set(CMAKE_C_COMPILER mpicc)
-
 project(NBODY VERSION 1.0 LANGUAGES CXX C)
 
 set(NBODY_BUILD_MODE_OPTIONS
     "DEFAULT"
+    "_GEMM_BASED"
     "_F32"
     "_WH_MULTIHOST"
+    "_WH_GEMM_MULTIHOST"
     "_WH_MULTICHIP"
     "_WH_MESH"
 )
 set(NBODY_BUILD_MODE "DEFAULT" CACHE STRING "Select the desired build flavor (e.g., DEFAULT, _F32, _WH_MULTIHOST, _WH_MULTICHIP, _WH_MESH).")
 set_property(CACHE NBODY_BUILD_MODE PROPERTY STRINGS ${NBODY_BUILD_MODE_OPTIONS})
 
-if ("${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTIHOST" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTICHIP" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MESH")
+if ("${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTIHOST" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_GEMM_MULTIHOST" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTICHIP" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MESH")
     set(CMAKE_CXX_STANDARD 20)
 else()
     set(CMAKE_CXX_STANDARD 17)
 endif()
+
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -53,26 +53,57 @@ if (USE_OPENMP)
     endif()
 endif()
 
-find_library(LIBNUMA numa REQUIRED)
-if (LIBNUMA)
+if ("${NBODY_BUILD_MODE}" STREQUAL "_GEMM_BASED")
+    set(OPENBLAS_ROOT "" CACHE PATH "Root directory of the OpenBLAS installation")
+    find_path(OPENBLAS_INCLUDE_DIR
+        NAMES cblas.h
+        HINTS ${OPENBLAS_ROOT} ENV OPENBLAS_ROOT
+              /opt/homebrew/opt/openblas /usr/local/opt/openblas
+        PATH_SUFFIXES include
+        REQUIRED
+    )
+    find_library(OPENBLAS_LIBRARY
+        NAMES openblas
+        HINTS ${OPENBLAS_ROOT} ENV OPENBLAS_ROOT
+              /opt/homebrew/opt/openblas /usr/local/opt/openblas
+        PATH_SUFFIXES lib
+        REQUIRED
+    )
+    target_include_directories(nbody_app PRIVATE ${OPENBLAS_INCLUDE_DIR})
+    target_link_libraries(nbody_app PRIVATE ${OPENBLAS_LIBRARY})
+    message(STATUS "GEMM backend: OpenBLAS (${OPENBLAS_LIBRARY})")
+endif()
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_library(LIBNUMA numa REQUIRED)
     message(STATUS "libnuma found: ${LIBNUMA}")
     target_link_libraries(nbody_app PRIVATE ${LIBNUMA})
 else()
-    message(FATAL_ERROR "libnuma not found. Please install libnuma-dev.")
+    message(STATUS "Skipping Linux-only libnuma dependency on ${CMAKE_SYSTEM_NAME}")
 endif()
 
-if ("${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTIHOST" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTICHIP" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MESH")
+if ("${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTIHOST" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_GEMM_MULTIHOST" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTICHIP" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MESH")
     set(ARCH_NAME "wormhole_b0")
+endif()
+
+if ("${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTIHOST" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_GEMM_MULTIHOST" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTICHIP" OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MESH")
+    # N-body owns MPI across ranks. Metalium's multihost backend would
+    # initialize MPI a second time; MeshDevice is used only for local devices.
+    set(ENABLE_DISTRIBUTED OFF CACHE BOOL "Use application-managed MPI" FORCE)
 endif()
 
 if ("${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTIHOST")
     add_compile_definitions(nbody_app "_WH_MULTIHOST")
+elseif ("${NBODY_BUILD_MODE}" STREQUAL "_WH_GEMM_MULTIHOST")
+    add_compile_definitions(nbody_app "_WH_GEMM_MULTIHOST")
 elseif ("${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTICHIP")
     add_compile_definitions(nbody_app "_WH_MULTICHIP")
 elseif ("${NBODY_BUILD_MODE}" STREQUAL "_WH_MESH")
     add_compile_definitions(nbody_app "_WH_MESH")
 elseif ("${NBODY_BUILD_MODE}" STREQUAL "_F32")
     add_compile_definitions(nbody_app "_F32")
+elseif ("${NBODY_BUILD_MODE}" STREQUAL "_GEMM_BASED")
+    add_compile_definitions(nbody_app "_GEMM_BASED")
 endif()
     
 target_compile_options(nbody_app PRIVATE -O3)
@@ -90,6 +121,7 @@ target_compile_options(nbody_app PRIVATE -Wno-deprecated-declarations)
 if ("${NBODY_BUILD_MODE}" STREQUAL "_WH" 
  OR "${NBODY_BUILD_MODE}" STREQUAL "_GS"
  OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTIHOST"
+ OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_GEMM_MULTIHOST"
  OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MULTICHIP"
  OR "${NBODY_BUILD_MODE}" STREQUAL "_WH_MESH")
     set(DEVICE_SPECIFIC_LIBS "")
@@ -143,4 +175,3 @@ if ("${NBODY_BUILD_MODE}" STREQUAL "_WH"
         target_sources(nbody_app PRIVATE ${PROFILER_SRC})
     endif()
 endif()
-

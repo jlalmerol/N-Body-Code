@@ -1,10 +1,16 @@
-#pragma once
 #include "utils.h"
 #include "kernel.h"
 #include <cstdio>
 #include <cstring>
+#include <array>
+#include <cmath>
+#include <stdexcept>
 
-#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
+#if defined(_GEMM_BASED)
+#include <cblas.h>
+#endif
+
+#if defined(_WH_MULTIHOST) || defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
 #include <tt-metalium/core_coord.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/work_split.hpp>
@@ -38,13 +44,15 @@ using namespace tt::tt_metal;
 
 #endif
 
-#if defined(_WH_MESH) 
+#if defined(_WH_MULTIHOST) || defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
 using namespace tt::tt_metal::distributed;
 #endif
 
 #define BLKSIZE 32
 
-#if defined(_WH_MULTIHOST)
+#if defined(_WH_GEMM_MULTIHOST)
+#include "wh_gemm_multihost.inc"
+#elif defined(_WH_MULTIHOST) && 0  // Pre-Metalium-0.74 implementation retained for reference.
 void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, double* __restrict h_par_z,
                       double* __restrict h_par_w, double* __restrict h_vel_x, double* __restrict h_vel_y,
                       double* __restrict h_vel_z, double* __restrict h_acc_x, double* __restrict h_acc_y,
@@ -396,7 +404,7 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
 
   tt::tt_metal::detail::CloseDevices(device_map);
 }
-#elif defined(_WH_MULTICHIP)
+#elif defined(_WH_MULTICHIP) && 0  // Pre-Metalium-0.74 implementation retained for reference.
 void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, double* __restrict h_par_z,
                       double* __restrict h_par_w, double* __restrict h_vel_x, double* __restrict h_vel_y,
                       double* __restrict h_vel_z, double* __restrict h_acc_x, double* __restrict h_acc_y,
@@ -769,23 +777,37 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     tt::tt_metal::detail::CloseDevices(device_map);
 }
 
-#elif defined(_WH_MESH)
+#elif defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
 void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, double* __restrict h_par_z,
                       double* __restrict h_par_w, double* __restrict h_vel_x, double* __restrict h_vel_y,
                       double* __restrict h_vel_z, double* __restrict h_acc_x, double* __restrict h_acc_y,
                       double* __restrict h_acc_z, double* __restrict h_adot_x, double* __restrict h_adot_y,
                       double* __restrict h_adot_z, Sys& sys) {
 
+#if defined(_WH_MULTIHOST)
+    auto mesh_device = MeshDevice::create(MeshDeviceConfig(MeshShape(1, 1)));
+#else
     auto mesh_device = MeshDevice::create(MeshDeviceConfig(MeshShape(1, 2)));
+#endif
 
     constexpr uint32_t TILE_HEIGHT = tt::constants::TILE_HEIGHT;
     constexpr uint32_t TILE_WIDTH = tt::constants::TILE_WIDTH;
     const uint32_t tile_size = TILE_WIDTH * TILE_HEIGHT;
     
-    const uint32_t local_N_per_rank = sys.N / sys.size;
+    const uint32_t local_N_per_rank = static_cast<uint32_t>(sys.end - sys.start);
+#if defined(_WH_MULTIHOST)
+    // One tile is a 32-target x 32-source interaction block. Target values are
+    // repeated across columns and source values across rows.
+    const uint32_t total_num_tiles = (local_N_per_rank + TILE_HEIGHT - 1) / TILE_HEIGHT;
+#else
     const uint32_t total_num_tiles = local_N_per_rank / tile_size;
+#endif
     const uint32_t tiles_per_device = total_num_tiles / mesh_device->num_devices();
+#if defined(_WH_MULTIHOST)
+    const uint32_t n_jtiles = (static_cast<uint32_t>(sys.N) + TILE_WIDTH - 1) / TILE_WIDTH;
+#else
     const uint32_t n_jtiles = sys.N;
+#endif
     auto tile_size_bytes = tile_size * sizeof(float);
     
     std::shared_ptr<MeshBuffer> px_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
@@ -806,7 +828,6 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     std::shared_ptr<MeshBuffer> ax = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
     std::shared_ptr<MeshBuffer> ay = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
     std::shared_ptr<MeshBuffer> az = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-
     std::shared_ptr<MeshBuffer> adx = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
     std::shared_ptr<MeshBuffer> ady = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
     std::shared_ptr<MeshBuffer> adz = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
@@ -814,8 +835,12 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     Program program = CreateProgram();
     auto& cq = mesh_device->mesh_command_queue();
     auto core_grid = mesh_device->compute_with_storage_grid_size();
-    auto all_device_cores = tt::tt_metal::CoreRangeSet({tt::tt_metal::CoreRange({0, 0}, {core_grid.x - 1, core_grid.y - 1})});
-    sys.num_cores = core_grid.x * core_grid.y;
+    constexpr bool row_major = true;
+    auto [num_active_cores, active_cores, core_group_1, core_group_2,
+          tiles_per_core_group_1, tiles_per_core_group_2] =
+        tt::tt_metal::split_work_to_cores(core_grid, tiles_per_device, row_major);
+    auto all_device_cores = active_cores;
+    sys.num_cores = num_active_cores * mesh_device->num_devices();
 
     const uint32_t cir_buf_num_tile = 8;
     CBHandle cb_px_i = MakeCircularBufferFP32(program, all_device_cores, tt::CBIndex::c_0, cir_buf_num_tile);
@@ -855,6 +880,16 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     CBHandle cb_tmp2 = MakeCircularBufferFP32(program, all_device_cores, tt::CBIndex::c_29, cir_buf_num_tile);
 
     std::vector<uint32_t> reader_compile_time_args;
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP)
+    reader_compile_time_args = {
+        static_cast<uint32_t>(tt::CBIndex::c_0), static_cast<uint32_t>(tt::CBIndex::c_1),
+        static_cast<uint32_t>(tt::CBIndex::c_2), static_cast<uint32_t>(tt::CBIndex::c_3),
+        static_cast<uint32_t>(tt::CBIndex::c_4), static_cast<uint32_t>(tt::CBIndex::c_5),
+        static_cast<uint32_t>(tt::CBIndex::c_6), static_cast<uint32_t>(tt::CBIndex::c_7),
+        static_cast<uint32_t>(tt::CBIndex::c_8), static_cast<uint32_t>(tt::CBIndex::c_9),
+        static_cast<uint32_t>(tt::CBIndex::c_10), static_cast<uint32_t>(tt::CBIndex::c_11),
+        static_cast<uint32_t>(tt::CBIndex::c_12)};
+#else
     TensorAccessorArgs(px_i->get_reference_buffer()).append_to(reader_compile_time_args);
     TensorAccessorArgs(px_j->get_reference_buffer()).append_to(reader_compile_time_args);
     TensorAccessorArgs(py_i->get_reference_buffer()).append_to(reader_compile_time_args);
@@ -869,19 +904,35 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     TensorAccessorArgs(vz_i->get_reference_buffer()).append_to(reader_compile_time_args);
     TensorAccessorArgs(vz_j->get_reference_buffer()).append_to(reader_compile_time_args);
     TensorAccessorArgs(pwj->get_reference_buffer()).append_to(reader_compile_time_args);
+#endif
 
     auto reader = CreateKernel(
       program,
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP)
+      "N-Body-Code/kernels/nb_read.cpp",
+#else
       "N-Body-Code/kernels/"
       "mesh_read.cpp",
+#endif
       all_device_cores,
       DataMovementConfig{
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP)
+        .processor = DataMovementProcessor::RISCV_0,
+        .noc = NOC::RISCV_0_default,
+#else
         .processor = DataMovementProcessor::RISCV_1,
         .noc = NOC::RISCV_1_default,
+#endif
         .compile_args = reader_compile_time_args
       });
 
     std::vector<uint32_t> writer_compile_time_args;
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP)
+    writer_compile_time_args = {
+        static_cast<uint32_t>(tt::CBIndex::c_13), static_cast<uint32_t>(tt::CBIndex::c_14),
+        static_cast<uint32_t>(tt::CBIndex::c_15), static_cast<uint32_t>(tt::CBIndex::c_16),
+        static_cast<uint32_t>(tt::CBIndex::c_17), static_cast<uint32_t>(tt::CBIndex::c_18)};
+#else
     TensorAccessorArgs(ax->get_reference_buffer()).append_to(writer_compile_time_args);
     TensorAccessorArgs(ay->get_reference_buffer()).append_to(writer_compile_time_args);
     TensorAccessorArgs(az->get_reference_buffer()).append_to(writer_compile_time_args);
@@ -889,15 +940,25 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     TensorAccessorArgs(adx->get_reference_buffer()).append_to(writer_compile_time_args);
     TensorAccessorArgs(ady->get_reference_buffer()).append_to(writer_compile_time_args);
     TensorAccessorArgs(adz->get_reference_buffer()).append_to(writer_compile_time_args);
+#endif
 
     KernelHandle writer = CreateKernel(
       program,
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP)
+      "N-Body-Code/kernels/nb_write.cpp",
+#else
       "N-Body-Code/kernels/"
       "mesh_write.cpp",
+#endif
       all_device_cores,
       DataMovementConfig{
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP)
+        .processor = DataMovementProcessor::RISCV_1,
+        .noc = NOC::RISCV_1_default,
+#else
         .processor = DataMovementProcessor::RISCV_0,
         .noc = NOC::RISCV_0_default,
+#endif
         .compile_args = writer_compile_time_args
       });
 
@@ -933,86 +994,136 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     unpack_modes[static_cast<uint32_t>(tt::CBIndex::c_28)] = UnpackToDestMode::UnpackToDestFp32;
     unpack_modes[static_cast<uint32_t>(tt::CBIndex::c_29)] = UnpackToDestMode::UnpackToDestFp32;
 
+    std::vector<uint32_t> compute_compile_time_args;
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP)
+    for (uint32_t cb = static_cast<uint32_t>(tt::CBIndex::c_0);
+         cb <= static_cast<uint32_t>(tt::CBIndex::c_18); ++cb) {
+        compute_compile_time_args.push_back(cb);
+    }
+#endif
+
     auto compute_config = ComputeConfig{
       .math_fidelity = MathFidelity::HiFi4,
       .fp32_dest_acc_en = true,
       .dst_full_sync_en = true,
       .unpack_to_dest_mode = unpack_modes,
       .math_approx_mode = false,
-      .compile_args = {},// compute_compile_time_args,
-      // .defines = {},
+      .compile_args = compute_compile_time_args,
+      .defines = {},
       .opt_level = KernelBuildOptLevel::O3
     };
     auto compute = CreateKernel(
         program,
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP)
+        "N-Body-Code/kernels/nb_compute.cpp",
+#else
         "N-Body-Code/kernels/"
         "mesh_compute.cpp",
+#endif
         all_device_cores,
 	      compute_config
 		  );
 
-    SetRuntimeArgs(program, reader, all_device_cores, {
-        tiles_per_device, n_jtiles,
-        static_cast<unsigned int>(px_i->address()),
-        static_cast<unsigned int>(px_j->address()), 
-        static_cast<unsigned int>(py_i->address()),
-        static_cast<unsigned int>(py_j->address()),
-        static_cast<unsigned int>(pz_i->address()),
-        static_cast<unsigned int>(pz_j->address()),
-        static_cast<unsigned int>(vx_i->address()),
-        static_cast<unsigned int>(vx_j->address()),
-        static_cast<unsigned int>(vy_i->address()),
-        static_cast<unsigned int>(vy_j->address()),
-        static_cast<unsigned int>(vz_i->address()),
-        static_cast<unsigned int>(vz_j->address()),
-        static_cast<unsigned int>(pwj->address())
-    });
+    const auto cores = grid_to_cores(
+        num_active_cores, core_grid.x, core_grid.y, row_major);
 
-    SetRuntimeArgs(program, writer, all_device_cores, {
-        tiles_per_device,
-        static_cast<unsigned int>(ax->address()),
-        static_cast<unsigned int>(ay->address()),
-        static_cast<unsigned int>(az->address()),
-        static_cast<unsigned int>(adx->address()),
-        static_cast<unsigned int>(ady->address()),
-        static_cast<unsigned int>(adz->address())
-    });
+    uint32_t first_tile = 0;
+    for (const auto& core : cores) {
+        uint32_t tile_count = 0;
+        if (core_group_1.contains(core)) {
+            tile_count = tiles_per_core_group_1;
+        } else if (core_group_2.contains(core)) {
+            tile_count = tiles_per_core_group_2;
+        }
 
-    SetRuntimeArgs(program, compute, all_device_cores, {
-        tiles_per_device, n_jtiles
+        SetRuntimeArgs(program, reader, core, {
+            tile_count, first_tile, n_jtiles,
+            static_cast<uint32_t>(px_i->address()), static_cast<uint32_t>(px_j->address()),
+            static_cast<uint32_t>(py_i->address()), static_cast<uint32_t>(py_j->address()),
+            static_cast<uint32_t>(pz_i->address()), static_cast<uint32_t>(pz_j->address()),
+            static_cast<uint32_t>(vx_i->address()), static_cast<uint32_t>(vx_j->address()),
+            static_cast<uint32_t>(vy_i->address()), static_cast<uint32_t>(vy_j->address()),
+            static_cast<uint32_t>(vz_i->address()), static_cast<uint32_t>(vz_j->address()),
+            static_cast<uint32_t>(pwj->address())
         });
 
-    std::vector<float> px_data(h_par_x + sys.start, h_par_x + sys.end);
-    std::vector<float> py_data(h_par_y + sys.start, h_par_y + sys.end);
-    std::vector<float> pz_data(h_par_z + sys.start, h_par_z + sys.end);
-    std::vector<float> vx_data(h_vel_x + sys.start, h_vel_x + sys.end);
-    std::vector<float> vy_data(h_vel_y + sys.start, h_vel_y + sys.end);
-    std::vector<float> vz_data(h_vel_z + sys.start, h_vel_z + sys.end);
+        SetRuntimeArgs(program, writer, core, {
+            tile_count, first_tile,
+            static_cast<uint32_t>(ax->address()), static_cast<uint32_t>(ay->address()),
+            static_cast<uint32_t>(az->address()), static_cast<uint32_t>(adx->address()),
+            static_cast<uint32_t>(ady->address()), static_cast<uint32_t>(adz->address())
+        });
 
-    std::vector<float> px_j_data, py_j_data, pz_j_data;
-    std::vector<float> vx_j_data, vy_j_data, vz_j_data;
-    std::vector<float> pw_j_data;
-    px_j_data.resize(sys.N * tile_size);
-    py_j_data.resize(sys.N * tile_size);
-    pz_j_data.resize(sys.N * tile_size);
-    vx_j_data.resize(sys.N * tile_size);
-    vy_j_data.resize(sys.N * tile_size);
-    vz_j_data.resize(sys.N * tile_size);
-    pw_j_data.resize(sys.N * tile_size);
+#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP)
+        SetRuntimeArgs(program, compute, core, {tile_count, first_tile, n_jtiles});
+#else
+        SetRuntimeArgs(program, compute, core, {tile_count, n_jtiles});
+#endif
+        first_tile += tile_count;
+    }
+
+    std::vector<float> px_data, py_data, pz_data, vx_data, vy_data, vz_data;
+    std::vector<float> px_j_data, py_j_data, pz_j_data, vx_j_data, vy_j_data, vz_j_data, pw_j_data;
+
+#if defined(_WH_MULTIHOST)
+    px_data.resize(total_num_tiles * tile_size); py_data.resize(total_num_tiles * tile_size);
+    pz_data.resize(total_num_tiles * tile_size); vx_data.resize(total_num_tiles * tile_size);
+    vy_data.resize(total_num_tiles * tile_size); vz_data.resize(total_num_tiles * tile_size);
+    px_j_data.resize(n_jtiles * tile_size); py_j_data.resize(n_jtiles * tile_size);
+    pz_j_data.resize(n_jtiles * tile_size); vx_j_data.resize(n_jtiles * tile_size);
+    vy_j_data.resize(n_jtiles * tile_size); vz_j_data.resize(n_jtiles * tile_size);
+    pw_j_data.resize(n_jtiles * tile_size);
+
+    auto physical_index = [tile_size](uint32_t tile, uint32_t row, uint32_t column) {
+        const uint32_t face = (row / 16) * 2 + column / 16;
+        return tile * tile_size + face * 256 + (row % 16) * 16 + column % 16;
+    };
+    auto set_tile = [&](std::vector<float>& data, uint32_t tile, uint32_t row, uint32_t column, float value) {
+        data[physical_index(tile, row, column)] = value;
+    };
 
     #pragma omp parallel for
-    for (int particle_idx = 0; particle_idx < sys.N; ++particle_idx) {
-        for (int j = 0; j < tile_size; ++j) {
-            int k = particle_idx * tile_size + j;
-            px_j_data[k] = h_par_x[particle_idx];
-            py_j_data[k] = h_par_y[particle_idx];
-            pz_j_data[k] = h_par_z[particle_idx];
-            vx_j_data[k] = h_vel_x[particle_idx];
-            vy_j_data[k] = h_vel_y[particle_idx];
-            vz_j_data[k] = h_vel_z[particle_idx];
-            pw_j_data[k] = h_par_w[particle_idx];
+    for (uint32_t local_i = 0; local_i < local_N_per_rank; ++local_i) {
+        const uint32_t particle = static_cast<uint32_t>(sys.start) + local_i;
+        const uint32_t tile = local_i / TILE_HEIGHT, row = local_i % TILE_HEIGHT;
+        for (uint32_t column = 0; column < TILE_WIDTH; ++column) {
+            set_tile(px_data,tile,row,column,h_par_x[particle]); set_tile(py_data,tile,row,column,h_par_y[particle]);
+            set_tile(pz_data,tile,row,column,h_par_z[particle]); set_tile(vx_data,tile,row,column,h_vel_x[particle]);
+            set_tile(vy_data,tile,row,column,h_vel_y[particle]); set_tile(vz_data,tile,row,column,h_vel_z[particle]);
         }
     }
+
+    #pragma omp parallel for
+    for (uint32_t particle = 0; particle < static_cast<uint32_t>(sys.N); ++particle) {
+        const uint32_t tile = particle / TILE_WIDTH, column = particle % TILE_WIDTH;
+        for (uint32_t row = 0; row < TILE_HEIGHT; ++row) {
+            set_tile(px_j_data,tile,row,column,h_par_x[particle]); set_tile(py_j_data,tile,row,column,h_par_y[particle]);
+            set_tile(pz_j_data,tile,row,column,h_par_z[particle]); set_tile(vx_j_data,tile,row,column,h_vel_x[particle]);
+            set_tile(vy_j_data,tile,row,column,h_vel_y[particle]); set_tile(vz_j_data,tile,row,column,h_vel_z[particle]);
+            set_tile(pw_j_data,tile,row,column,h_par_w[particle]);
+        }
+    }
+#else
+    px_data.assign(h_par_x + sys.start, h_par_x + sys.end);
+    py_data.assign(h_par_y + sys.start, h_par_y + sys.end);
+    pz_data.assign(h_par_z + sys.start, h_par_z + sys.end);
+    vx_data.assign(h_vel_x + sys.start, h_vel_x + sys.end);
+    vy_data.assign(h_vel_y + sys.start, h_vel_y + sys.end);
+    vz_data.assign(h_vel_z + sys.start, h_vel_z + sys.end);
+    px_j_data.resize(sys.N * tile_size); py_j_data.resize(sys.N * tile_size);
+    pz_j_data.resize(sys.N * tile_size); vx_j_data.resize(sys.N * tile_size);
+    vy_j_data.resize(sys.N * tile_size); vz_j_data.resize(sys.N * tile_size);
+    pw_j_data.resize(sys.N * tile_size);
+    #pragma omp parallel for
+    for (int particle_idx = 0; particle_idx < sys.N; ++particle_idx) {
+        for (uint32_t j = 0; j < tile_size; ++j) {
+            const uint32_t k = particle_idx * tile_size + j;
+            px_j_data[k]=h_par_x[particle_idx]; py_j_data[k]=h_par_y[particle_idx]; pz_j_data[k]=h_par_z[particle_idx];
+            vx_j_data[k]=h_vel_x[particle_idx]; vy_j_data[k]=h_vel_y[particle_idx]; vz_j_data[k]=h_vel_z[particle_idx];
+            pw_j_data[k]=h_par_w[particle_idx];
+        }
+    }
+#endif
 
     EnqueueWriteMeshBuffer(cq, px_i, px_data, false /* blocking */);
     EnqueueWriteMeshBuffer(cq, px_j, px_j_data, false /* blocking */);
@@ -1032,10 +1143,10 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     auto start = std::chrono::high_resolution_clock::now();
     // auto start_event = cq.enqueue_record_event_to_host();
 
-    auto mesh_workload = CreateMeshWorkload();
+    MeshWorkload mesh_workload;
     auto device_range = MeshCoordinateRange(mesh_device->shape());
 
-    AddProgramToMeshWorkload(mesh_workload, std::move(program), device_range);
+    mesh_workload.add_program(device_range, std::move(program));
     EnqueueMeshWorkload(cq, mesh_workload, true /* blocking */);
     // EnqueueMeshWorkload(cq, mesh_workload, true /* blocking */);
 
@@ -1043,20 +1154,14 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     // cq.enqueue_wait_for_event(end_event);
     // distributed::EventSynchronize(end_event);
 
-    auto end = std::chrono::high_resolution_clock::now();
-
     std::vector<float> ax_data;
     std::vector<float> ay_data;
     std::vector<float> az_data;
     std::vector<float> adx_data;
     std::vector<float> ady_data;
     std::vector<float> adz_data;
-    ax_data.resize(px_data.size());
-    ay_data.resize(px_data.size());
-    az_data.resize(px_data.size());
-    adx_data.resize(px_data.size());
-    ady_data.resize(px_data.size());
-    adz_data.resize(px_data.size());
+    ax_data.resize(px_data.size()); ay_data.resize(px_data.size()); az_data.resize(px_data.size());
+    adx_data.resize(px_data.size()); ady_data.resize(px_data.size()); adz_data.resize(px_data.size());
 
     EnqueueReadMeshBuffer(cq, ax_data, ax, true /* blocking */);
     EnqueueReadMeshBuffer(cq, ay_data, ay, true /* blocking */);
@@ -1065,6 +1170,8 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     EnqueueReadMeshBuffer(cq, adx_data, adx, true /* blocking */);
     EnqueueReadMeshBuffer(cq, ady_data, ady, true /* blocking */);
     EnqueueReadMeshBuffer(cq, adz_data, adz, true /* blocking */);
+
+    auto end = std::chrono::high_resolution_clock::now();
 
     // tt::tt_metal::DumpDeviceProfileResults(device, program);
 
@@ -1087,17 +1194,214 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     }
 
     #pragma omp parallel for
-    for (size_t i = 0; i < local_N_per_rank; ++i) {
-      h_acc_x[i + sys.start] = static_cast<double>(ax_data[i]);
-      h_acc_y[i + sys.start] = static_cast<double>(ay_data[i]);
-      h_acc_z[i + sys.start] = static_cast<double>(az_data[i]);
-      h_adot_x[i + sys.start] = static_cast<double>(adx_data[i]);
-      h_adot_y[i + sys.start] = static_cast<double>(ady_data[i]);
-      h_adot_z[i + sys.start] = static_cast<double>(adz_data[i]);
+    for (uint32_t i = 0; i < local_N_per_rank; ++i) {
+#if defined(_WH_MULTIHOST)
+      const uint32_t tile=i/TILE_HEIGHT, row=i%TILE_HEIGHT;
+      double sax=0.0, say=0.0, saz=0.0, sadx=0.0, sady=0.0, sadz=0.0;
+      for (uint32_t column=0; column<TILE_WIDTH; ++column) {
+          const uint32_t face=(row/16)*2+column/16;
+          const uint32_t k=tile*tile_size+face*256+(row%16)*16+column%16;
+          sax+=ax_data[k]; say+=ay_data[k]; saz+=az_data[k];
+          sadx+=adx_data[k]; sady+=ady_data[k]; sadz+=adz_data[k];
+      }
+      h_acc_x[i+sys.start]=sax; h_acc_y[i+sys.start]=say; h_acc_z[i+sys.start]=saz;
+      h_adot_x[i+sys.start]=sadx; h_adot_y[i+sys.start]=sady; h_adot_z[i+sys.start]=sadz;
+#else
+      h_acc_x[i+sys.start]=static_cast<double>(ax_data[i]); h_acc_y[i+sys.start]=static_cast<double>(ay_data[i]);
+      h_acc_z[i+sys.start]=static_cast<double>(az_data[i]); h_adot_x[i+sys.start]=static_cast<double>(adx_data[i]);
+      h_adot_y[i+sys.start]=static_cast<double>(ady_data[i]); h_adot_z[i+sys.start]=static_cast<double>(adz_data[i]);
+#endif
     }
 
   mesh_device->close();
 }
+#elif defined(_GEMM_BASED)
+namespace {
+
+struct alignas(64) NBodyTile32 {
+  std::array<double, BLKSIZE * BLKSIZE> values{};
+
+  double* data() { return values.data(); }
+  const double* data() const { return values.data(); }
+};
+
+struct NBodyTargetTile {
+  NBodyTile32 Ar;
+  NBodyTile32 Av;
+  int start = 0;
+  int count = 0;
+};
+
+struct NBodyForceWorkspace {
+  NBodyTile32 Br;
+  NBodyTile32 Bv;
+  NBodyTile32 P;
+  NBodyTile32 D;
+  NBodyTile32 C;
+  NBodyTile32 W;
+  NBodyTile32 U;
+  NBodyTile32 HW;
+  NBodyTile32 HU;
+};
+
+// Row-major GEMM over physical 32x32 tiles. The full result tile is cleared,
+// while active_k and active_n skip padding known to be identically zero on CPU.
+void nbody_tile_gemm(const double* A, const double* B, double* C,
+                     int active_k, int active_n) {
+  constexpr int TILE = BLKSIZE;
+  std::fill(C, C + TILE * TILE, 0.0);
+  cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+              TILE, active_n, active_k,
+              1.0, A, TILE, B, TILE,
+              0.0, C, TILE);
+}
+
+}  // namespace
+
+void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y,
+                       double* __restrict h_par_z, double* __restrict h_par_w,
+                       double* __restrict h_vel_x, double* __restrict h_vel_y,
+                       double* __restrict h_vel_z, double* __restrict h_acc_x,
+                       double* __restrict h_acc_y, double* __restrict h_acc_z,
+                       double* __restrict h_adot_x, double* __restrict h_adot_y,
+                       double* __restrict h_adot_z, Sys& sys) {
+  constexpr int B = BLKSIZE;
+
+  #pragma omp parallel for
+  for (int i = 0; i < sys.N; ++i) {
+    h_acc_x[i] = h_acc_y[i] = h_acc_z[i] = 0.0;
+    h_adot_x[i] = h_adot_y[i] = h_adot_z[i] = 0.0;
+  }
+
+  const int target_blocks = (sys.end - sys.start + B - 1) / B;
+  const int source_blocks = (sys.N + B - 1) / B;
+  std::vector<NBodyTargetTile> targets(target_blocks);
+
+  // Targets remain packed for the force evaluation. Source tiles are packed
+  // into per-thread storage immediately before use so their padded matrices
+  // are hot in cache during the four GEMMs.
+  #pragma omp parallel for schedule(static)
+  for (int iblock = 0; iblock < target_blocks; ++iblock) {
+    NBodyTargetTile& target = targets[iblock];
+    target.start = sys.start + iblock * B;
+    target.count = std::min(B, sys.end - target.start);
+
+    for (int ii = 0; ii < target.count; ++ii) {
+      const int i = target.start + ii;
+      const double x = h_par_x[i], y = h_par_y[i], z = h_par_z[i];
+      const double vx = h_vel_x[i], vy = h_vel_y[i], vz = h_vel_z[i];
+
+      target.Ar.values[ii * B + 0] = x*x + y*y + z*z;
+      target.Ar.values[ii * B + 1] = x;
+      target.Ar.values[ii * B + 2] = y;
+      target.Ar.values[ii * B + 3] = z;
+      target.Ar.values[ii * B + 4] = 1.0;
+
+      target.Av.values[ii * B + 0] = 1.0;
+      target.Av.values[ii * B + 1] = vx;
+      target.Av.values[ii * B + 2] = vy;
+      target.Av.values[ii * B + 3] = vz;
+      target.Av.values[ii * B + 4] = x;
+      target.Av.values[ii * B + 5] = y;
+      target.Av.values[ii * B + 6] = z;
+      target.Av.values[ii * B + 7] = x*vx + y*vy + z*vz;
+    }
+  }
+
+  #pragma omp parallel
+  {
+    NBodyForceWorkspace workspace;
+
+    #pragma omp for schedule(static)
+    for (int iblock = 0; iblock < target_blocks; ++iblock) {
+      const NBodyTargetTile& target = targets[iblock];
+
+      for (int jblock = 0; jblock < source_blocks; ++jblock) {
+        const int source_start = jblock * B;
+        const int source_count = std::min(B, sys.N - source_start);
+        workspace.Br = NBodyTile32{};
+        workspace.Bv = NBodyTile32{};
+        workspace.P = NBodyTile32{};
+
+        for (int jj = 0; jj < source_count; ++jj) {
+          const int j = source_start + jj;
+          const double x = h_par_x[j], y = h_par_y[j], z = h_par_z[j];
+          const double vx = h_vel_x[j], vy = h_vel_y[j], vz = h_vel_z[j];
+
+          workspace.Br.values[0 * B + jj] = 1.0;
+          workspace.Br.values[1 * B + jj] = -2.0*x;
+          workspace.Br.values[2 * B + jj] = -2.0*y;
+          workspace.Br.values[3 * B + jj] = -2.0*z;
+          workspace.Br.values[4 * B + jj] = x*x + y*y + z*z;
+
+          workspace.Bv.values[0 * B + jj] = x*vx + y*vy + z*vz;
+          workspace.Bv.values[1 * B + jj] = -x;
+          workspace.Bv.values[2 * B + jj] = -y;
+          workspace.Bv.values[3 * B + jj] = -z;
+          workspace.Bv.values[4 * B + jj] = -vx;
+          workspace.Bv.values[5 * B + jj] = -vy;
+          workspace.Bv.values[6 * B + jj] = -vz;
+          workspace.Bv.values[7 * B + jj] = 1.0;
+
+          workspace.P.values[jj * B + 0] = 1.0;
+          workspace.P.values[jj * B + 1] = x;
+          workspace.P.values[jj * B + 2] = y;
+          workspace.P.values[jj * B + 3] = z;
+          workspace.P.values[jj * B + 4] = vx;
+          workspace.P.values[jj * B + 5] = vy;
+          workspace.P.values[jj * B + 6] = vz;
+        }
+
+        nbody_tile_gemm(
+            target.Ar.data(), workspace.Br.data(), workspace.D.data(), 5, B);
+        nbody_tile_gemm(
+            target.Av.data(), workspace.Bv.data(), workspace.C.data(), 8, B);
+
+        for (int ii = 0; ii < B; ++ii) {
+          for (int jj = 0; jj < B; ++jj) {
+            const bool valid = ii < target.count && jj < source_count;
+            const int i = target.start + ii;
+            const int j = source_start + jj;
+            if (!valid || i == j) {
+              workspace.W.values[ii * B + jj] = 0.0;
+              workspace.U.values[ii * B + jj] = 0.0;
+              continue;
+            }
+
+            const double s =
+                std::max(0.0, workspace.D.values[ii * B + jj]) + EPS2;
+            const double inv_r = 1.0 / std::sqrt(s);
+            const double w = h_par_w[j] * inv_r * inv_r * inv_r;
+            workspace.W.values[ii * B + jj] = w;
+            workspace.U.values[ii * B + jj] =
+                -3.0 * w * workspace.C.values[ii * B + jj] / s;
+          }
+        }
+
+        nbody_tile_gemm(
+            workspace.W.data(), workspace.P.data(), workspace.HW.data(), B, 7);
+        nbody_tile_gemm(
+            workspace.U.data(), workspace.P.data(), workspace.HU.data(), B, 7);
+
+        for (int ii = 0; ii < target.count; ++ii) {
+          const int i = target.start + ii;
+          const double sw = workspace.HW.values[ii * B];
+          const double su = workspace.HU.values[ii * B];
+          h_acc_x[i] += workspace.HW.values[ii * B + 1] - h_par_x[i] * sw;
+          h_acc_y[i] += workspace.HW.values[ii * B + 2] - h_par_y[i] * sw;
+          h_acc_z[i] += workspace.HW.values[ii * B + 3] - h_par_z[i] * sw;
+          h_adot_x[i] += workspace.HW.values[ii * B + 4] - h_vel_x[i] * sw
+                       + workspace.HU.values[ii * B + 1] - h_par_x[i] * su;
+          h_adot_y[i] += workspace.HW.values[ii * B + 5] - h_vel_y[i] * sw
+                       + workspace.HU.values[ii * B + 2] - h_par_y[i] * su;
+          h_adot_z[i] += workspace.HW.values[ii * B + 6] - h_vel_z[i] * sw
+                       + workspace.HU.values[ii * B + 3] - h_par_z[i] * su;
+        }
+      }
+    }
+  }
+}
+
 #elif defined(_F32)
 void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, double* __restrict h_par_z, 
                       double* __restrict h_par_w, double* __restrict h_vel_x, double* __restrict h_vel_y, 

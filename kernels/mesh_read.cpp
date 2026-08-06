@@ -1,25 +1,25 @@
-#include "dataflow_api.h"
-#include "debug/dprint.h"
+#include "api/dataflow/dataflow_api.h"
 #include <cstdint>
 
 void kernel_main() {
     uint32_t n_tiles = get_arg_val<uint32_t>(0);
-    uint32_t N = get_arg_val<uint32_t>(1);
+    uint32_t first_tile = get_arg_val<uint32_t>(1);
+    uint32_t N = get_arg_val<uint32_t>(2);
 
-    uint32_t pxi_addr = get_arg_val<uint32_t>(2);
-    uint32_t pxj_addr = get_arg_val<uint32_t>(3);
-    uint32_t pyi_addr = get_arg_val<uint32_t>(4);
-    uint32_t pyj_addr = get_arg_val<uint32_t>(5);
-    uint32_t pzi_addr = get_arg_val<uint32_t>(6);
-    uint32_t pzj_addr = get_arg_val<uint32_t>(7);
+    uint32_t pxi_addr = get_arg_val<uint32_t>(3);
+    uint32_t pxj_addr = get_arg_val<uint32_t>(4);
+    uint32_t pyi_addr = get_arg_val<uint32_t>(5);
+    uint32_t pyj_addr = get_arg_val<uint32_t>(6);
+    uint32_t pzi_addr = get_arg_val<uint32_t>(7);
+    uint32_t pzj_addr = get_arg_val<uint32_t>(8);
 
-    uint32_t vxi_addr = get_arg_val<uint32_t>(8);
-    uint32_t vxj_addr = get_arg_val<uint32_t>(9);
-    uint32_t vyi_addr = get_arg_val<uint32_t>(10);
-    uint32_t vyj_addr = get_arg_val<uint32_t>(11);
-    uint32_t vzi_addr = get_arg_val<uint32_t>(12);
-    uint32_t vzj_addr = get_arg_val<uint32_t>(13);
-    uint32_t pwj_addr = get_arg_val<uint32_t>(14);
+    uint32_t vxi_addr = get_arg_val<uint32_t>(9);
+    uint32_t vxj_addr = get_arg_val<uint32_t>(10);
+    uint32_t vyi_addr = get_arg_val<uint32_t>(11);
+    uint32_t vyj_addr = get_arg_val<uint32_t>(12);
+    uint32_t vzi_addr = get_arg_val<uint32_t>(13);
+    uint32_t vzj_addr = get_arg_val<uint32_t>(14);
+    uint32_t pwj_addr = get_arg_val<uint32_t>(15);
 
     constexpr uint32_t cb_pxi = tt::CBIndex::c_0;
     constexpr uint32_t cb_pxj = tt::CBIndex::c_1;
@@ -72,13 +72,14 @@ void kernel_main() {
         uint32_t cb_vyi_addr = get_write_ptr(cb_vyi);
         uint32_t cb_vzi_addr = get_write_ptr(cb_vzi);
 
-        noc_async_read_tile(i, pxi, cb_pxi_addr);
-        noc_async_read_tile(i, pyi, cb_pyi_addr);
-        noc_async_read_tile(i, pzi, cb_pzi_addr);
+        const uint32_t target_tile = first_tile + i;
+        noc_async_read_tile(target_tile, pxi, cb_pxi_addr);
+        noc_async_read_tile(target_tile, pyi, cb_pyi_addr);
+        noc_async_read_tile(target_tile, pzi, cb_pzi_addr);
 
-        noc_async_read_tile(i, vxi, cb_vxi_addr);
-        noc_async_read_tile(i, vyi, cb_vyi_addr);
-        noc_async_read_tile(i, vzi, cb_vzi_addr);
+        noc_async_read_tile(target_tile, vxi, cb_vxi_addr);
+        noc_async_read_tile(target_tile, vyi, cb_vyi_addr);
+        noc_async_read_tile(target_tile, vzi, cb_vzi_addr);
 
         noc_async_read_barrier();
 
@@ -138,4 +139,3 @@ void kernel_main() {
         }
     }
 }
-

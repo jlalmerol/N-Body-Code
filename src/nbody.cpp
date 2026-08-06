@@ -100,7 +100,7 @@ void NBody::initialize() {
 
   T = compute_kinetic(h_par_w, h_vel_x, h_vel_y, h_vel_z, N);
   U = compute_potential(h_par_x, h_par_y, h_par_z, h_par_w, N);
-  double Q = virial_ratio(h_par_x, h_par_y, h_par_z, h_par_w, h_vel_x, h_vel_y, h_vel_z, N);
+  double Q = -2.0 * T / U;
   float invsqrtQ = 1.0/std::sqrt(Q);
 
 #pragma omp parallel for
@@ -110,7 +110,7 @@ void NBody::initialize() {
     h_vel_z[i] = h_vel_z[i] * invsqrtQ;
   }
   T = compute_kinetic(h_par_w, h_vel_x, h_vel_y, h_vel_z, N);
-  Q = virial_ratio(h_par_x, h_par_y, h_par_z, h_par_w, h_vel_x, h_vel_y, h_vel_z, N);
+  Q = -2.0 * T / U;
 }
 
 void NBody::initializewithzeros() {
@@ -231,11 +231,9 @@ void NBody::timestepping(){
   start =  omp_get_wtime();
   force_calculation(h_par_x, h_par_y, h_par_z, h_par_w, h_vel_x, h_vel_y, h_vel_z, h_acc1_x, h_acc1_y, h_acc1_z, h_a1dot_x, h_a1dot_y, h_a1dot_z, sys);
   end =  omp_get_wtime();
-#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
-  sys.t_eval = sys.kernel_time;
-#else
+  // EVAL consistently measures the complete force_calculation call for every
+  // backend: host preparation, transfers, device work, reads and postprocess.
   sys.t_eval = end - start;
-#endif
 
   MPI_Allreduce(MPI_IN_PLACE, h_acc1_x, N, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, h_acc1_y, N, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
@@ -309,11 +307,10 @@ void NBody::cycle(int ncycle){
   start = omp_get_wtime();
   force_calculation(h_par_x, h_par_y, h_par_z, h_par_w, h_vel_x, h_vel_y, h_vel_z, h_acc_x, h_acc_y, h_acc_z, h_adot_x, h_adot_y, h_adot_z, sys);
   end = omp_get_wtime();
-#if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH) 
-  sys.t_eval_init = sys.kernel_time;
-#else
   sys.t_eval_init = end - start;
-#endif
+
+  // Report the slowest rank, matching the per-cycle EVAL reduction below.
+  MPI_Allreduce(MPI_IN_PLACE, &sys.t_eval_init, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 
   MPI_Allreduce(MPI_IN_PLACE, h_acc_x, N, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(MPI_IN_PLACE, h_acc_y, N, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
@@ -337,10 +334,6 @@ void NBody::cycle(int ncycle){
 
   for (int i = 0; i < ncycle; i++){
     timestepping();
-    T = compute_kinetic(h_par_w, h_vel_x, h_vel_y, h_vel_z, N);
-    U = compute_potential(h_par_x, h_par_y, h_par_z, h_par_w, N);
-    sys.finE = T + U;
-    sys.Q = -2.0 * T / U;
 
     if (rank == 0) {
       MPI_Reduce(MPI_IN_PLACE, &sys.t_pred, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -363,6 +356,11 @@ void NBody::cycle(int ncycle){
       sys.t_corrv[i] = sys.t_corr;
     }
   }
+
+  T = compute_kinetic(h_par_w, h_vel_x, h_vel_y, h_vel_z, N);
+  U = compute_potential(h_par_x, h_par_y, h_par_z, h_par_w, N);
+  sys.finE = T + U;
+  sys.Q = -2.0 * T / U;
 
   if (rank == 0){
      sys.Err = estimate_err(sys.finE, sys.initE);

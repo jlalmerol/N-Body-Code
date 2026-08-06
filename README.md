@@ -37,12 +37,28 @@ make
 | `None` | Builds the **default** CPU-only implementation in full FP64 precision. |
 | `_F32` | Builds the **CPU**-only mixed-precision version (FP32 and FP64). |
 | `_WH_MULTIHOST` | Builds the simulation for multiple **Wormhole (WH)** devices using only **L**-chip. |
+| `_WH_GEMM_MULTIHOST` | Builds the blocked 32x32 GEMM force kernel for one **Wormhole** per MPI rank. |
 | `_WH_MULTICHIP` | Builds the simulation for multiple **Wormhole (WH)** devices using both **L**-chip and **R**-chip. |
 | `_WH_MESH` | Builds the simulation for a **mesh configuration** of multiple **Wormhole (WH)** devices. |
+
+For a detailed comparison of the Wormhole data layouts, compute engines,
+reductions, device lifecycles, and current benchmark results, see
+[COMPUTE_KERNEL_REPORT.md](COMPUTE_KERNEL_REPORT.md).
 
 Note:
 Wormhole cards are currently configured in isolation.
 Mesh topology per MPI process follows a (1, 2) layout.
+
+The GEMM multi-host mode expects each MPI rank's target range to start on a
+32-particle boundary. Choose `N` so that the per-rank particle count is a
+multiple of 32. Configure it from a TT-Metal source tree containing this
+repository as `N-Body-Code`:
+
+```bash
+cmake -S N-Body-Code -B N-Body-Code/build \
+  -DNBODY_BUILD_MODE=_WH_GEMM_MULTIHOST
+cmake --build N-Body-Code/build -j
+```
 
 ---
 
