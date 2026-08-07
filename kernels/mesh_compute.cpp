@@ -10,6 +10,9 @@
 #include "api/compute/compute_kernel_api.h"
 #include "api/compute/eltwise_unary/fill.h"
 #include "api/compute/eltwise_unary/rsqrt.h"
+#ifdef NBODY_DEVICE_ROW_REDUCE
+#include "api/compute/reduce.h"
+#endif
 
 #include "tools/profiler/kernel_profiler.hpp"
 #include "llk_math_eltwise_ternary_sfpu_params.h"
@@ -176,6 +179,24 @@ void muladd_tile(
 			dst_index_in0, dst_index_in1, dst_index_in2, dst_index_out)));
 }
 
+#ifdef NBODY_DEVICE_ROW_REDUCE
+template <auto InputCB, auto ScaleCB, auto OutputCB>
+inline void reduce_rows_to_full_tile() {
+    cb_wait_front(InputCB, 1);
+    cb_wait_front(ScaleCB, 1);
+    tile_regs_acquire();
+    reduce_init<PoolType::SUM, ReduceDim::REDUCE_ROW>(InputCB, ScaleCB, OutputCB);
+    reduce_tile<PoolType::SUM, ReduceDim::REDUCE_ROW>(InputCB, ScaleCB, 0, 0, 0);
+    tile_regs_commit();
+    tile_regs_wait();
+    pack_tile(0, OutputCB);
+    tile_regs_release();
+    reduce_uninit();
+    cb_push_back(OutputCB, 1);
+    cb_pop_front(InputCB, 1);
+}
+#endif
+
 void kernel_main() {
 	uint32_t n_tiles = get_arg_val<uint32_t>(0);
 	uint32_t N = get_arg_val<uint32_t>(1);
@@ -218,6 +239,9 @@ void kernel_main() {
 	constexpr auto cb_dx = tt::CBIndex::c_27;
 	constexpr auto cb_dy = tt::CBIndex::c_28;
 	constexpr auto cb_dz = tt::CBIndex::c_29;
+#ifdef NBODY_DEVICE_ROW_REDUCE
+	constexpr auto cb_row_scale = tt::CBIndex::c_30;
+#endif
 		
 	constexpr uint32_t dst_reg = 0;
 
@@ -230,9 +254,11 @@ void kernel_main() {
 	mul_binary_tile_init();
 
 	for (uint32_t i = 0; i < n_tiles; i++) {
+#ifdef NBODY_DEVICE_PROFILE
 		DeviceZoneScopedN("NBCOMPUTE");
 		DeviceTimestampedData("computetime", i + ((uint64_t)1 << 32));
 		DeviceRecordEvent(i);
+#endif
 
 		cb_wait_front(cb_pxi, 1);
 		cb_wait_front(cb_pyi, 1);
@@ -253,6 +279,9 @@ void kernel_main() {
 		cb_reserve_back(cb_ax, 1);
 		cb_reserve_back(cb_ay, 1);
 		cb_reserve_back(cb_az, 1);
+		cb_reserve_back(cb_adx, 1);
+		cb_reserve_back(cb_ady, 1);
+		cb_reserve_back(cb_adz, 1);
 
 		tile_regs_acquire();
 
@@ -525,6 +554,36 @@ void kernel_main() {
 		cb_wait_front(cb_adyt, 1);
 		cb_wait_front(cb_adzt, 1);
 
+#ifdef NBODY_DEVICE_ROW_REDUCE
+		cb_reserve_back(cb_row_scale, 1);
+		tile_regs_acquire();
+		fill_tile(0, 1.0f);
+		tile_regs_commit();
+		tile_regs_wait();
+		pack_tile(0, cb_row_scale);
+		tile_regs_release();
+		cb_push_back(cb_row_scale, 1);
+
+		reduce_rows_to_full_tile<cb_axt, cb_row_scale, cb_ax>();
+		reduce_rows_to_full_tile<cb_ayt, cb_row_scale, cb_ay>();
+		reduce_rows_to_full_tile<cb_azt, cb_row_scale, cb_az>();
+		reduce_rows_to_full_tile<cb_adxt, cb_row_scale, cb_adx>();
+		reduce_rows_to_full_tile<cb_adyt, cb_row_scale, cb_ady>();
+		reduce_rows_to_full_tile<cb_adzt, cb_row_scale, cb_adz>();
+		cb_pop_front(cb_row_scale, 1);
+
+		// Reduction changes the compute pipeline configuration. Restore all
+		// elementwise operations before this core processes its next target tile.
+		if (i + 1 < n_tiles) {
+			unary_op_init_common(cb_pxi, cb_ax);
+			fill_tile_init();
+			sub_binary_tile_init();
+			add_binary_tile_init();
+			square_tile_init();
+			rsqrt_tile_init();
+			mul_binary_tile_init();
+		}
+#else
 		tile_regs_acquire();
 
 		copy_tile(cb_axt, 0, 0);
@@ -563,6 +622,7 @@ void kernel_main() {
 		cb_pop_front(cb_adxt, 1);
 		cb_pop_front(cb_adyt, 1);
 		cb_pop_front(cb_adzt, 1);
+#endif
 
 		cb_pop_front(cb_pxi, 1);
 		cb_pop_front(cb_pyi, 1);

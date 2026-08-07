@@ -89,19 +89,52 @@ Note:
 The simulation runs with MPI, where each MPI process is mapped to a single Wormhole (WH) card.
 This configuration enables multi-device execution across multiple WH cards through TT-Metal, achieving distributed parallelism across hardware resources.
 
+### Performance options
+
+See [FORCE_KERNEL_DETAILS.md](FORCE_KERNEL_DETAILS.md) for a detailed account
+of host packing, 32×32 all-pairs blocks, device calculations, accumulation,
+reduction, and output reconstruction in `_WH_MULTIHOST` and
+`_WH_GEMM_MULTIHOST`.
+
+Wormhole builds report the last force-call phases: host packing, one-time setup,
+H2D, workload, D2H, and host postprocessing. The report can be disabled with
+`-DNBODY_PHASE_TIMERS=OFF`.
+
+Device profiler events are disabled by default. Enable them only for profiling
+with `-DNBODY_DEVICE_PROFILE=ON`.
+
+`-DNBODY_DEVICE_ROW_REDUCE=ON` enables the experimental SFPU row reduction for
+`_WH_MULTIHOST` and `_WH_MESH`. It deliberately retains full-tile output so the
+device reduction can be validated independently before compact buffers and a
+compact writer are introduced. Compare a small run against the default build
+before benchmarking it.
+
 ---
 
 ## ⚙️ Software and Environment Specifications
-The following software environment was used for development, testing, and validation:
+The following software and hardware environment was used for development, testing, and validation.
+Collected from tt-smi snapshot.
 
-| Component                       | Version / Commit                            |
-| ------------------------------- | ------------------------------------------- |
-| **TT-Metal**                    | `v0.62.0-rc33-281-gef93c54e01`              |
-| **TT-Metal submodule (tt_llk)** | `e95fdff39539fdafc96c84672c7f09b5ee38eff3`  |
-| **TT-Metal submodule (umd)**    | `d5196f5ee90f0380848a19e199a68e8dab883eb6`  |
-| **MPI**                         | `OpenMPI v5.0.7-ulfm`                       |
-| **C++ Compiler**                | `g++ 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04)` |
-| **Python**                      | `3.12.3`                                    |
+| Component | Version / Details |
+| --------- | ----------------- |
+| **Operating system** | `Ubuntu 22.04.5 LTS` |
+| **Kernel** | `5.15.0-185-generic` |
+| **Platform** | `x86_64` |
+| **Host memory** | `30.95 GB` |
+| **TT-KMD driver** | `2.8.0` |
+| **tt-smi** | `5.3.0` |
+| **pyluwen** | `0.8.5` |
+| **TT-UMD** | `0.9.5` |
+| **Python** | `3.10.12` |
+| **MPI** | `Open MPI 5.0.7rc2` (`/opt/openmpi-v5.0.7-ulfm`) |
+| **Device** | `Tenstorrent n150 L`, PCIe `0000:01:00.0`, Gen `4` x`16`, DRAM `10G` |
+| **Firmware bundle** | `19.6.0.0` |
+| **TT flash** | `0.3.6.2` |
+| **CM firmware** | `2.39.0.0` (date `2026-02-11`) |
+| **Ethernet firmware** | `7.5.0` |
+| **DM bootloader firmware** | `129.2.0.0` |
+| **DM application firmware** | `5.12.0.0` |
+| **TT-Metal** | `v0.74.0-dev20260624-31-g416f59fe33b` |
 
 ---
 

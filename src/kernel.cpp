@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <map>
 #include <random>
 #include <string_view>
 #include <vector>
@@ -144,7 +145,6 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     CBHandle cb_tmp0 = MakeCircularBufferFP32(program, all_device_cores, tt::CBIndex::c_27, cir_buf_num_tile);
     CBHandle cb_tmp1 = MakeCircularBufferFP32(program, all_device_cores, tt::CBIndex::c_28, cir_buf_num_tile);
     CBHandle cb_tmp2 = MakeCircularBufferFP32(program, all_device_cores, tt::CBIndex::c_29, cir_buf_num_tile);
-
     std::vector<uint32_t> reader_compile_time_args = {
         (std::uint32_t)tt::CBIndex::c_0, (std::uint32_t)tt::CBIndex::c_1,
         (std::uint32_t)tt::CBIndex::c_2, (std::uint32_t)tt::CBIndex::c_3,
@@ -778,16 +778,58 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
 }
 
 #elif defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
+namespace {
+struct WhSfpuPersistentContext {
+    int global_n = 0;
+    int local_n = 0;
+    int rank_start = 0;
+    uint32_t target_tiles = 0;
+    uint32_t source_tiles = 0;
+    uint32_t active_cores = 0;
+    std::shared_ptr<MeshDevice> mesh_device;
+    std::shared_ptr<MeshBuffer> px_j, px_i, py_j, py_i, pz_j, pz_i;
+    std::shared_ptr<MeshBuffer> vx_j, vx_i, vy_j, vy_i, vz_j, vz_i, pwj;
+    std::shared_ptr<MeshBuffer> ax, ay, az, adx, ady, adz;
+    MeshWorkload workload;
+    bool workload_ready = false;
+};
+
+#if defined(_WH_MULTIHOST)
+std::unique_ptr<WhSfpuPersistentContext> wh_sfpu_context;
+#endif
+}  // namespace
+
+void shutdown_force_calculation_backend() {
+#if defined(_WH_MULTIHOST)
+    if (wh_sfpu_context && wh_sfpu_context->mesh_device) wh_sfpu_context->mesh_device->close();
+    wh_sfpu_context.reset();
+#endif
+}
+
 void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, double* __restrict h_par_z,
                       double* __restrict h_par_w, double* __restrict h_vel_x, double* __restrict h_vel_y,
                       double* __restrict h_vel_z, double* __restrict h_acc_x, double* __restrict h_acc_y,
                       double* __restrict h_acc_z, double* __restrict h_adot_x, double* __restrict h_adot_y,
                       double* __restrict h_adot_z, Sys& sys) {
 
+    using PhaseClock = std::chrono::steady_clock;
+    const auto phase_setup_begin = PhaseClock::now();
+#ifdef NBODY_PHASE_TIMERS
+    constexpr bool force_h2d_phase_boundary = true;
+#else
+    constexpr bool force_h2d_phase_boundary = false;
+#endif
+
 #if defined(_WH_MULTIHOST)
-    auto mesh_device = MeshDevice::create(MeshDeviceConfig(MeshShape(1, 1)));
+    if (!wh_sfpu_context) wh_sfpu_context = std::make_unique<WhSfpuPersistentContext>();
+    auto& persistent = *wh_sfpu_context;
+    if (!persistent.mesh_device) persistent.mesh_device = MeshDevice::create(MeshDeviceConfig(MeshShape(1, 1)));
+    auto mesh_device = persistent.mesh_device;
 #else
     auto mesh_device = MeshDevice::create(MeshDeviceConfig(MeshShape(1, 2)));
+    WhSfpuPersistentContext transient;
+    auto& persistent = transient;
+    persistent.mesh_device = mesh_device;
 #endif
 
     constexpr uint32_t TILE_HEIGHT = tt::constants::TILE_HEIGHT;
@@ -795,7 +837,7 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     const uint32_t tile_size = TILE_WIDTH * TILE_HEIGHT;
     
     const uint32_t local_N_per_rank = static_cast<uint32_t>(sys.end - sys.start);
-#if defined(_WH_MULTIHOST)
+#if defined(_WH_MULTIHOST) || defined(_WH_MESH)
     // One tile is a 32-target x 32-source interaction block. Target values are
     // repeated across columns and source values across rows.
     const uint32_t total_num_tiles = (local_N_per_rank + TILE_HEIGHT - 1) / TILE_HEIGHT;
@@ -803,37 +845,51 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     const uint32_t total_num_tiles = local_N_per_rank / tile_size;
 #endif
     const uint32_t tiles_per_device = total_num_tiles / mesh_device->num_devices();
-#if defined(_WH_MULTIHOST)
+#if defined(_WH_MULTIHOST) || defined(_WH_MESH)
     const uint32_t n_jtiles = (static_cast<uint32_t>(sys.N) + TILE_WIDTH - 1) / TILE_WIDTH;
 #else
     const uint32_t n_jtiles = sys.N;
 #endif
     auto tile_size_bytes = tile_size * sizeof(float);
-    
-    std::shared_ptr<MeshBuffer> px_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
-    std::shared_ptr<MeshBuffer> px_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-    std::shared_ptr<MeshBuffer> py_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
-    std::shared_ptr<MeshBuffer> py_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-    std::shared_ptr<MeshBuffer> pz_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
-    std::shared_ptr<MeshBuffer> pz_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+    if (total_num_tiles == 0 || total_num_tiles % mesh_device->num_devices() != 0) {
+        throw std::runtime_error("SFPU MeshDevice backend requires at least one target tile per device and an even tile split");
+    }
+    if (!persistent.workload_ready) {
+        persistent.global_n = sys.N; persistent.local_n = local_N_per_rank; persistent.rank_start = sys.start;
+        persistent.target_tiles = total_num_tiles; persistent.source_tiles = n_jtiles;
+        persistent.px_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
+        persistent.px_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+        persistent.py_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
+        persistent.py_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+        persistent.pz_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
+        persistent.pz_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+        persistent.vx_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
+        persistent.vx_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+        persistent.vy_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
+        persistent.vy_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+        persistent.vz_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
+        persistent.vz_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+        persistent.pwj = MakeReplicatedBuffer(mesh_device, n_jtiles);
+        persistent.ax = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+        persistent.ay = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+        persistent.az = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+        persistent.adx = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+        persistent.ady = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+        persistent.adz = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
+    } else if (persistent.global_n != sys.N || persistent.local_n != static_cast<int>(local_N_per_rank) ||
+               persistent.rank_start != sys.start || persistent.target_tiles != total_num_tiles ||
+               persistent.source_tiles != n_jtiles) {
+        throw std::runtime_error("persistent SFPU context cannot change problem or MPI partition size");
+    }
+    auto& px_j=persistent.px_j; auto& px_i=persistent.px_i; auto& py_j=persistent.py_j; auto& py_i=persistent.py_i;
+    auto& pz_j=persistent.pz_j; auto& pz_i=persistent.pz_i; auto& vx_j=persistent.vx_j; auto& vx_i=persistent.vx_i;
+    auto& vy_j=persistent.vy_j; auto& vy_i=persistent.vy_i; auto& vz_j=persistent.vz_j; auto& vz_i=persistent.vz_i;
+    auto& pwj=persistent.pwj; auto& ax=persistent.ax; auto& ay=persistent.ay; auto& az=persistent.az;
+    auto& adx=persistent.adx; auto& ady=persistent.ady; auto& adz=persistent.adz;
 
-    std::shared_ptr<MeshBuffer> vx_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
-    std::shared_ptr<MeshBuffer> vx_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-    std::shared_ptr<MeshBuffer> vy_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
-    std::shared_ptr<MeshBuffer> vy_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-    std::shared_ptr<MeshBuffer> vz_j = MakeReplicatedBuffer(mesh_device, n_jtiles);
-    std::shared_ptr<MeshBuffer> vz_i = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-    std::shared_ptr<MeshBuffer> pwj = MakeReplicatedBuffer(mesh_device, n_jtiles);
-
-    std::shared_ptr<MeshBuffer> ax = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-    std::shared_ptr<MeshBuffer> ay = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-    std::shared_ptr<MeshBuffer> az = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-    std::shared_ptr<MeshBuffer> adx = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-    std::shared_ptr<MeshBuffer> ady = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-    std::shared_ptr<MeshBuffer> adz = MakeMeshBuffer(mesh_device, tiles_per_device, total_num_tiles);
-
-    Program program = CreateProgram();
     auto& cq = mesh_device->mesh_command_queue();
+    if (!persistent.workload_ready) {
+    Program program = CreateProgram();
     auto core_grid = mesh_device->compute_with_storage_grid_size();
     constexpr bool row_major = true;
     auto [num_active_cores, active_cores, core_group_1, core_group_2,
@@ -878,6 +934,9 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     CBHandle cb_tmp0 = MakeCircularBufferFP32(program, all_device_cores, tt::CBIndex::c_27, cir_buf_num_tile);
     CBHandle cb_tmp1 = MakeCircularBufferFP32(program, all_device_cores, tt::CBIndex::c_28, cir_buf_num_tile);
     CBHandle cb_tmp2 = MakeCircularBufferFP32(program, all_device_cores, tt::CBIndex::c_29, cir_buf_num_tile);
+#ifdef NBODY_DEVICE_ROW_REDUCE
+    CBHandle cb_row_scale = MakeCircularBufferFP32(program, all_device_cores, tt::CBIndex::c_30, 1);
+#endif
 
     std::vector<uint32_t> reader_compile_time_args;
 #if defined(_WH_MULTIHOST) || defined(_WH_MULTICHIP)
@@ -1002,6 +1061,13 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     }
 #endif
 
+    std::map<std::string, std::string> compute_defines;
+#ifdef NBODY_DEVICE_PROFILE
+    compute_defines["NBODY_DEVICE_PROFILE"] = "1";
+#endif
+#ifdef NBODY_DEVICE_ROW_REDUCE
+    compute_defines["NBODY_DEVICE_ROW_REDUCE"] = "1";
+#endif
     auto compute_config = ComputeConfig{
       .math_fidelity = MathFidelity::HiFi4,
       .fp32_dest_acc_en = true,
@@ -1009,7 +1075,7 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
       .unpack_to_dest_mode = unpack_modes,
       .math_approx_mode = false,
       .compile_args = compute_compile_time_args,
-      .defines = {},
+      .defines = compute_defines,
       .opt_level = KernelBuildOptLevel::O3
     };
     auto compute = CreateKernel(
@@ -1062,10 +1128,19 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
         first_tile += tile_count;
     }
 
+    auto device_range = MeshCoordinateRange(mesh_device->shape());
+    persistent.workload.add_program(device_range, std::move(program));
+    persistent.active_cores = sys.num_cores;
+    persistent.workload_ready = true;
+    }
+    sys.num_cores = persistent.active_cores;
+    const auto phase_pack_begin = PhaseClock::now();
+    sys.phase_setup = std::chrono::duration<double>(phase_pack_begin - phase_setup_begin).count();
+
     std::vector<float> px_data, py_data, pz_data, vx_data, vy_data, vz_data;
     std::vector<float> px_j_data, py_j_data, pz_j_data, vx_j_data, vy_j_data, vz_j_data, pw_j_data;
 
-#if defined(_WH_MULTIHOST)
+#if defined(_WH_MULTIHOST) || defined(_WH_MESH)
     px_data.resize(total_num_tiles * tile_size); py_data.resize(total_num_tiles * tile_size);
     pz_data.resize(total_num_tiles * tile_size); vx_data.resize(total_num_tiles * tile_size);
     vy_data.resize(total_num_tiles * tile_size); vz_data.resize(total_num_tiles * tile_size);
@@ -1125,6 +1200,9 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     }
 #endif
 
+    const auto phase_h2d_begin = PhaseClock::now();
+    sys.phase_host_pack = std::chrono::duration<double>(phase_h2d_begin - phase_pack_begin).count();
+
     EnqueueWriteMeshBuffer(cq, px_i, px_data, false /* blocking */);
     EnqueueWriteMeshBuffer(cq, px_j, px_j_data, false /* blocking */);
     EnqueueWriteMeshBuffer(cq, py_i, py_data, false /* blocking */);
@@ -1138,21 +1216,14 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     EnqueueWriteMeshBuffer(cq, vy_j, vy_j_data, false /* blocking */);
     EnqueueWriteMeshBuffer(cq, vz_i, vz_data, false /* blocking */);
     EnqueueWriteMeshBuffer(cq, vz_j, vz_j_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, pwj, pw_j_data, false /* blocking */);
+    EnqueueWriteMeshBuffer(cq, pwj, pw_j_data, force_h2d_phase_boundary);
 
-    auto start = std::chrono::high_resolution_clock::now();
-    // auto start_event = cq.enqueue_record_event_to_host();
-
-    MeshWorkload mesh_workload;
-    auto device_range = MeshCoordinateRange(mesh_device->shape());
-
-    mesh_workload.add_program(device_range, std::move(program));
-    EnqueueMeshWorkload(cq, mesh_workload, true /* blocking */);
-    // EnqueueMeshWorkload(cq, mesh_workload, true /* blocking */);
-
-    // auto end_event = cq.enqueue_record_event_to_host();
-    // cq.enqueue_wait_for_event(end_event);
-    // distributed::EventSynchronize(end_event);
+    const auto phase_workload_begin = PhaseClock::now();
+    sys.phase_h2d = std::chrono::duration<double>(phase_workload_begin - phase_h2d_begin).count();
+    EnqueueMeshWorkload(cq, persistent.workload, true /* blocking */);
+    const auto phase_d2h_begin = PhaseClock::now();
+    sys.phase_workload = std::chrono::duration<double>(phase_d2h_begin - phase_workload_begin).count();
+    sys.kernel_time = sys.phase_workload;
 
     std::vector<float> ax_data;
     std::vector<float> ay_data;
@@ -1170,18 +1241,8 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     EnqueueReadMeshBuffer(cq, adx_data, adx, true /* blocking */);
     EnqueueReadMeshBuffer(cq, ady_data, ady, true /* blocking */);
     EnqueueReadMeshBuffer(cq, adz_data, adz, true /* blocking */);
-
-    auto end = std::chrono::high_resolution_clock::now();
-
-    // tt::tt_metal::DumpDeviceProfileResults(device, program);
-
-    std::chrono::duration<double, std::milli> elapsed_ms =
-        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(end - start);
-
-    double milliseconds = elapsed_ms.count();
-    double seconds = milliseconds / 1000.0;
-
-    sys.kernel_time = seconds;
+    const auto phase_post_begin = PhaseClock::now();
+    sys.phase_d2h = std::chrono::duration<double>(phase_post_begin - phase_d2h_begin).count();
 
     #pragma omp parallel for
     for (size_t i = 0; i < sys.N; ++i) {
@@ -1195,10 +1256,15 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
 
     #pragma omp parallel for
     for (uint32_t i = 0; i < local_N_per_rank; ++i) {
-#if defined(_WH_MULTIHOST)
+#if defined(_WH_MULTIHOST) || defined(_WH_MESH)
       const uint32_t tile=i/TILE_HEIGHT, row=i%TILE_HEIGHT;
       double sax=0.0, say=0.0, saz=0.0, sadx=0.0, sady=0.0, sadz=0.0;
-      for (uint32_t column=0; column<TILE_WIDTH; ++column) {
+#ifdef NBODY_DEVICE_ROW_REDUCE
+      constexpr uint32_t output_columns = 1;
+#else
+      constexpr uint32_t output_columns = TILE_WIDTH;
+#endif
+      for (uint32_t column=0; column<output_columns; ++column) {
           const uint32_t face=(row/16)*2+column/16;
           const uint32_t k=tile*tile_size+face*256+(row%16)*16+column%16;
           sax+=ax_data[k]; say+=ay_data[k]; saz+=az_data[k];
@@ -1213,7 +1279,11 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
 #endif
     }
 
+    sys.phase_host_postprocess = std::chrono::duration<double>(PhaseClock::now() - phase_post_begin).count();
+
+#if !defined(_WH_MULTIHOST)
   mesh_device->close();
+#endif
 }
 #elif defined(_GEMM_BASED)
 namespace {

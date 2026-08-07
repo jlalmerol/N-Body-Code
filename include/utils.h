@@ -42,6 +42,12 @@ struct Sys {
     double t_eval_init = 0.0;
     double kernel_time = 0.0;
     double kernel_time_init = 0.0;
+    double phase_host_pack = 0.0;
+    double phase_setup = 0.0;
+    double phase_h2d = 0.0;
+    double phase_workload = 0.0;
+    double phase_d2h = 0.0;
+    double phase_host_postprocess = 0.0;
     std::vector<double> t_evalv;
     std::vector<double> t_predv;
     std::vector<double> t_corrv;

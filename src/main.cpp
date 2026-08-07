@@ -82,7 +82,7 @@ int main(int argc, char* argv[]) {
   double start = MPI_Wtime();
   NBody nbody(N, vmax, rmax, mmin, mmax); 
   nbody.cycle(Ncycle);
-#if defined(_WH_GEMM_MULTIHOST)
+#if defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTIHOST) || defined(_WH_MESH)
   shutdown_force_calculation_backend();
 #endif
   MPI_Barrier(MPI_COMM_WORLD);
@@ -127,6 +127,14 @@ int main(int argc, char* argv[]) {
       std::cout << "Final Energy: " << nbody.sys.finE << std::endl;
       std::cout << "Q = " << nbody.sys.Q << std::endl;
       std::cout << "Err = " << nbody.sys.Err << std::endl;
+#if defined(NBODY_PHASE_TIMERS) && (defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTIHOST) || defined(_WH_MESH))
+      std::cout << "Last force phases (s): pack=" << nbody.sys.phase_host_pack
+                << " setup=" << nbody.sys.phase_setup
+                << " H2D=" << nbody.sys.phase_h2d
+                << " workload=" << nbody.sys.phase_workload
+                << " D2H=" << nbody.sys.phase_d2h
+                << " postprocess=" << nbody.sys.phase_host_postprocess << std::endl;
+#endif
   }
 
   if (rank == 0) {

@@ -50,6 +50,13 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y,
                        double* __restrict h_acc_y, double* __restrict h_acc_z,
                        double* __restrict h_adot_x, double* __restrict h_adot_y,
                        double* __restrict h_adot_z, Sys& sys) {
+    using PhaseClock = std::chrono::steady_clock;
+    const auto phase_pack_begin = PhaseClock::now();
+#ifdef NBODY_PHASE_TIMERS
+    constexpr bool force_h2d_phase_boundary = true;
+#else
+    constexpr bool force_h2d_phase_boundary = false;
+#endif
     if ((sys.start % WHG_TILE) != 0) {
         throw std::runtime_error("_WH_GEMM_MULTIHOST requires MPI target ranges aligned to 32 particles");
     }
@@ -113,6 +120,8 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y,
                 whg_set(masks,kind,i,j,(!diagonal || i != j) ? 1.0f : 0.0f);
     }
 
+    const auto phase_setup_begin = PhaseClock::now();
+    sys.phase_host_pack = std::chrono::duration<double>(phase_setup_begin - phase_pack_begin).count();
     if (!whg_context) {
         whg_context = std::make_unique<WhgPersistentContext>();
         auto& context = *whg_context;
@@ -172,6 +181,9 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y,
         context.workload.add_program(device_range,std::move(program));
     }
 
+    const auto phase_h2d_begin = PhaseClock::now();
+    sys.phase_setup = std::chrono::duration<double>(phase_h2d_begin - phase_setup_begin).count();
+
     auto& context = *whg_context;
     if (context.global_n != static_cast<uint32_t>(sys.N) || context.local_n != local_n ||
         context.global_target_tile0 != global_target_tile0 || context.target_tiles != target_tiles ||
@@ -183,15 +195,20 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y,
     auto& cq = context.mesh_device->mesh_command_queue();
     EnqueueWriteMeshBuffer(cq,context.ar_buf,ar,false); EnqueueWriteMeshBuffer(cq,context.av_buf,av,false);
     EnqueueWriteMeshBuffer(cq,context.br_buf,br,false); EnqueueWriteMeshBuffer(cq,context.bv_buf,bv,false);
-    EnqueueWriteMeshBuffer(cq,context.p_buf,p,false); EnqueueWriteMeshBuffer(cq,context.mask_buf,masks,false);
+    EnqueueWriteMeshBuffer(cq,context.p_buf,p,false);
+    EnqueueWriteMeshBuffer(cq,context.mask_buf,masks,force_h2d_phase_boundary);
 
-    auto start = std::chrono::high_resolution_clock::now();
-    EnqueueMeshWorkload(cq, context.workload, false);
+    const auto phase_workload_begin = PhaseClock::now();
+    sys.phase_h2d = std::chrono::duration<double>(phase_workload_begin - phase_h2d_begin).count();
+    EnqueueMeshWorkload(cq, context.workload, true);
+    const auto phase_d2h_begin = PhaseClock::now();
+    sys.phase_workload = std::chrono::duration<double>(phase_d2h_begin - phase_workload_begin).count();
     std::vector<float> hw_physical(target_tiles*WHG_TILE_ELEMS), hu_physical(target_tiles*WHG_TILE_ELEMS);
     EnqueueReadMeshBuffer(cq, hw_physical, context.hw_buf, true);
     EnqueueReadMeshBuffer(cq, hu_physical, context.hu_buf, true);
-    auto end = std::chrono::high_resolution_clock::now();
-    sys.kernel_time = std::chrono::duration<double>(end-start).count();
+    const auto phase_post_begin = PhaseClock::now();
+    sys.phase_d2h = std::chrono::duration<double>(phase_post_begin - phase_d2h_begin).count();
+    sys.kernel_time = sys.phase_workload;
     std::fill(h_acc_x,h_acc_x+sys.N,0.0); std::fill(h_acc_y,h_acc_y+sys.N,0.0);
     std::fill(h_acc_z,h_acc_z+sys.N,0.0); std::fill(h_adot_x,h_adot_x+sys.N,0.0);
     std::fill(h_adot_y,h_adot_y+sys.N,0.0); std::fill(h_adot_z,h_adot_z+sys.N,0.0);
@@ -205,4 +222,5 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y,
         h_adot_y[i]=whg_get(hw_physical,tile,row,5)-h_vel_y[i]*sw+whg_get(hu_physical,tile,row,2)-h_par_y[i]*su;
         h_adot_z[i]=whg_get(hw_physical,tile,row,6)-h_vel_z[i]*sw+whg_get(hu_physical,tile,row,3)-h_par_z[i]*su;
     }
+    sys.phase_host_postprocess = std::chrono::duration<double>(PhaseClock::now() - phase_post_begin).count();
 }
