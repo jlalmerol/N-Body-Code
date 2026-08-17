@@ -1,5 +1,9 @@
 #include "utils.h"
+#include <algorithm>
+#include <array>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 
 #if defined(_WH_MULTIHOST) || defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
 #include "nbody_tt_integration.h"
@@ -184,92 +188,164 @@ double estimate_err(double En, double E0) {
     return std::abs(En - E0) / std::abs(E0);
 }
 
-void test(double* h_par_x, double* h_par_y, double* h_par_z, double* h_par_w, double* h_vel_x, double* h_vel_y, double* h_vel_z, double *h_acc_x, double *h_acc_y, double *h_acc_z, double *h_adot_x, double *h_adot_y, double *h_adot_z, int N) {
-    double *ax = new double [N];
-    double *ay = new double [N];
-    double *az = new double [N];
-    double *a1x = new double [N];
-    double *a1y = new double [N];
-    double *a1z = new double [N];
-    double energy = 0.0;
+namespace {
 
-    // Variables to store the maximum values
-    double max_ax = 0, max_ay = 0, max_az = 0;
-    double max_a1x = 0, max_a1y = 0, max_a1z = 0;
+struct ValidationMetrics {
+    double relative_l2 = 0.0;
+    double rms_absolute = 0.0;
+    double max_absolute = 0.0;
+    double max_robust_relative = 0.0;
+    double reference_rms = 0.0;
+    double relative_floor = 0.0;
+    int max_absolute_particle = -1;
+    int max_absolute_component = -1;
+    int max_relative_particle = -1;
+    int max_relative_component = -1;
+    double max_absolute_reference = 0.0;
+    double max_absolute_result = 0.0;
+    double max_relative_reference = 0.0;
+    double max_relative_result = 0.0;
+    std::size_t non_finite = 0;
+};
 
-    for(int i = 0; i < N; i++){
-        ax[i] = 0.; az[i] = 0.;
-        ay[i] = 0.; a1x[i] = 0.; a1y[i] = 0.; a1z[i] = 0.;
+ValidationMetrics calculate_validation_metrics(
+    const std::array<const double*, 3>& reference,
+    const std::array<const double*, 3>& result,
+    int n) {
+    ValidationMetrics metrics;
+    const std::size_t count = static_cast<std::size_t>(n) * reference.size();
+    if (count == 0) return metrics;
+
+    long double reference_squared_sum = 0.0L;
+    long double error_squared_sum = 0.0L;
+    for (int i = 0; i < n; ++i) {
+        for (std::size_t component = 0; component < reference.size(); ++component) {
+            const double ref = reference[component][i];
+            const double got = result[component][i];
+            if (!std::isfinite(ref) || !std::isfinite(got)) {
+                ++metrics.non_finite;
+                continue;
+            }
+            const long double error = static_cast<long double>(got) - ref;
+            reference_squared_sum += static_cast<long double>(ref) * ref;
+            error_squared_sum += error * error;
+            const double absolute_error = std::abs(got - ref);
+            if (absolute_error > metrics.max_absolute) {
+                metrics.max_absolute = absolute_error;
+                metrics.max_absolute_particle = i;
+                metrics.max_absolute_component = static_cast<int>(component);
+                metrics.max_absolute_reference = ref;
+                metrics.max_absolute_result = got;
+            }
+        }
     }
 
+    metrics.reference_rms = std::sqrt(static_cast<double>(reference_squared_sum / count));
+    metrics.rms_absolute = std::sqrt(static_cast<double>(error_squared_sum / count));
+    metrics.relative_l2 = reference_squared_sum > 0.0L
+        ? std::sqrt(static_cast<double>(error_squared_sum / reference_squared_sum))
+        : (error_squared_sum == 0.0L ? 0.0 : std::numeric_limits<double>::infinity());
+
+    // A component close to zero must not turn harmless roundoff into an
+    // enormous relative error. Scale the floor to the RMS reference magnitude,
+    // while retaining an absolute lower bound for an all-zero reference.
+    metrics.relative_floor = std::max(1.0e-12, metrics.reference_rms * 1.0e-6);
+    for (int i = 0; i < n; ++i) {
+        for (std::size_t component = 0; component < reference.size(); ++component) {
+            const double ref = reference[component][i];
+            const double got = result[component][i];
+            if (!std::isfinite(ref) || !std::isfinite(got)) continue;
+            const double robust_relative =
+                std::abs(got - ref) / std::max(std::abs(ref), metrics.relative_floor);
+            if (robust_relative > metrics.max_robust_relative) {
+                metrics.max_robust_relative = robust_relative;
+                metrics.max_relative_particle = i;
+                metrics.max_relative_component = static_cast<int>(component);
+                metrics.max_relative_reference = ref;
+                metrics.max_relative_result = got;
+            }
+        }
+    }
+    return metrics;
+}
+
+void print_validation_metrics(const char* quantity, const ValidationMetrics& metrics) {
+    static constexpr std::array<const char*, 3> component_names = {"x", "y", "z"};
+    const auto component_name = [&](int component) {
+        return component >= 0 && component < static_cast<int>(component_names.size())
+            ? component_names[component]
+            : "n/a";
+    };
+
+    std::cout << std::left << std::setw(14) << quantity
+              << std::right << std::scientific << std::setprecision(6)
+              << " rel_L2=" << std::setw(13) << metrics.relative_l2
+              << " rms_abs=" << std::setw(13) << metrics.rms_absolute
+              << " ref_rms=" << std::setw(13) << metrics.reference_rms << '\n'
+              << std::setw(14) << ""
+              << " max_abs=" << std::setw(13) << metrics.max_absolute
+              << " at=" << metrics.max_absolute_particle << ':'
+              << component_name(metrics.max_absolute_component)
+              << " (ref=" << metrics.max_absolute_reference
+              << ", got=" << metrics.max_absolute_result << ')'
+              << '\n'
+              << std::setw(14) << ""
+              << " max_rel*=" << std::setw(13) << metrics.max_robust_relative
+              << " floor=" << metrics.relative_floor
+              << " at=" << metrics.max_relative_particle << ':'
+              << component_name(metrics.max_relative_component)
+              << " (ref=" << metrics.max_relative_reference
+              << ", got=" << metrics.max_relative_result << ')'
+              << " non_finite=" << metrics.non_finite << '\n';
+}
+
+}  // namespace
+
+void test(double* h_par_x, double* h_par_y, double* h_par_z, double* h_par_w, double* h_vel_x, double* h_vel_y, double* h_vel_z, double *h_acc_x, double *h_acc_y, double *h_acc_z, double *h_adot_x, double *h_adot_y, double *h_adot_z, int N) {
+    std::vector<double> ax(N, 0.0), ay(N, 0.0), az(N, 0.0);
+    std::vector<double> a1x(N, 0.0), a1y(N, 0.0), a1z(N, 0.0);
+
+    // Each target is independent, matching the device's all-sources-per-target
+    // formulation and avoiding races in the parallel reference calculation.
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < N; i++) {
-        for (int j = 0; j < i; j++) {
+        double ref_ax = 0.0, ref_ay = 0.0, ref_az = 0.0;
+        double ref_jx = 0.0, ref_jy = 0.0, ref_jz = 0.0;
+        for (int j = 0; j < N; j++) {
+            if (j == i) continue;
             double dx = h_par_x[j] - h_par_x[i];
             double dy = h_par_y[j] - h_par_y[i];
             double dz = h_par_z[j] - h_par_z[i];
-	    if (i == 0 && j < 5){
-		    std::cout << "dx["<< i << "," << j << "] : " << dx << std::endl;
-		    std::cout << "dy["<< i << "," << j << "] : " << dy << std::endl;
-		    std::cout << "dz["<< i << "," << j << "] : " << dz << std::endl;
-	    }
             double dvx = h_vel_x[j] - h_vel_x[i];
             double dvy = h_vel_y[j] - h_vel_y[i];
             double dvz = h_vel_z[j] - h_vel_z[i];
             double distance = 1.0 / std::sqrt(dx * dx + dy * dy + dz * dz + EPS2);
             double sqrdistj = h_par_w[j] * distance * distance * distance;
-            double sqrdisti = h_par_w[i] * distance * distance * distance;
-            energy -= h_par_w[j] * h_par_w[i] * distance;
-            double rinv2 = -3.0f * distance * distance;
+            double rinv2 = -3.0 * distance * distance;
             double q1 = rinv2 * (dx * dvx + dy * dvy + dz * dvz);
-            ax[i] += dx * sqrdistj;
-            ay[i] += dy * sqrdistj;
-            az[i] += dz * sqrdistj;
-            ax[j] -= dx * sqrdisti;
-            ay[j] -= dy * sqrdisti;
-            az[j] -= dz * sqrdisti;
-            a1x[i] += sqrdistj * (q1 * dx + dvx);
-            a1y[i] += sqrdistj * (q1 * dy + dvy);
-            a1z[i] += sqrdistj * (q1 * dz + dvz);
-            a1x[j] -= sqrdisti * (q1 * dx + dvx);
-            a1y[j] -= sqrdisti * (q1 * dy + dvy);
-            a1z[j] -= sqrdisti * (q1 * dz + dvz);
+            ref_ax += dx * sqrdistj;
+            ref_ay += dy * sqrdistj;
+            ref_az += dz * sqrdistj;
+            ref_jx += sqrdistj * (q1 * dx + dvx);
+            ref_jy += sqrdistj * (q1 * dy + dvy);
+            ref_jz += sqrdistj * (q1 * dz + dvz);
         }
+        ax[i] = ref_ax; ay[i] = ref_ay; az[i] = ref_az;
+        a1x[i] = ref_jx; a1y[i] = ref_jy; a1z[i] = ref_jz;
     }
     
-    std::cout << "Relative difference of acc from reference code:" << std::endl;
-    for (int i = 0; i < N; i++) {
-        double value_ax = std::abs((ax[i] - h_acc_x[i]) / ax[i]);
-        double value_ay = std::abs((ay[i] - h_acc_y[i]) / ay[i]);
-        double value_az = std::abs((az[i] - h_acc_z[i]) / az[i]);
-
-        if (i < PRT) {
-            printf("%.12g  %.12g  %.12g\n", value_ax, value_ay, value_az);
-        }
-
-        if (value_ax > max_ax) max_ax = value_ax;
-        if (value_ay > max_ay) max_ay = value_ay;
-        if (value_az > max_az) max_az = value_az;
-    }
-
-    std::cout << "Relative difference of adot from reference code:" << std::endl;
-    for (int i = 0; i < N; i++) {
-        double value_a1x = std::abs((a1x[i] - h_adot_x[i]) / a1x[i]);
-        double value_a1y = std::abs((a1y[i] - h_adot_y[i]) / a1y[i]);
-        double value_a1z = std::abs((a1z[i] - h_adot_z[i]) / a1z[i]);
-
-        if (i < PRT) {
-            printf("%.12g  %.12g  %.12g\n", value_a1x, value_a1y, value_a1z);
-        }
-
-        if (value_a1x > max_a1x) max_a1x = value_a1x;
-        if (value_a1y > max_a1y) max_a1y = value_a1y;
-        if (value_a1z > max_a1z) max_a1z = value_a1z;
-    }
-
-    delete[] ax;
-    delete[] ay;
-    delete[] az;
-    delete[] a1x;
-    delete[] a1y;
-    delete[] a1z;
+    const auto saved_flags = std::cout.flags();
+    const auto saved_precision = std::cout.precision();
+    std::cout << "\nDEBUG force validation (double host reference, N=" << N << ")\n";
+    std::cout << "max_rel* uses max(|reference|, floor); floor = ref_rms * 1e-6, minimum 1e-12\n";
+    print_validation_metrics(
+        "acceleration",
+        calculate_validation_metrics(
+            {ax.data(), ay.data(), az.data()}, {h_acc_x, h_acc_y, h_acc_z}, N));
+    print_validation_metrics(
+        "jerk",
+        calculate_validation_metrics(
+            {a1x.data(), a1y.data(), a1z.data()}, {h_adot_x, h_adot_y, h_adot_z}, N));
+    std::cout.flags(saved_flags);
+    std::cout.precision(saved_precision);
 }

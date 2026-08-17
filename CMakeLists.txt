@@ -45,6 +45,7 @@ option(USE_OPENMP "Enable OpenMP for the force calculation kernel" ON)
 option(NBODY_DEVICE_PROFILE "Enable device-side N-body profiler events" OFF)
 option(NBODY_DEVICE_ROW_REDUCE "Experimentally reduce 32-column SFPU outputs on device" OFF)
 option(NBODY_PHASE_TIMERS "Print force-calculation phase timings" ON)
+option(NBODY_DEBUG_VALIDATION "Run the double-precision host force validator" OFF)
 
 if (NBODY_DEVICE_PROFILE)
     target_compile_definitions(nbody_app PRIVATE NBODY_DEVICE_PROFILE)
@@ -124,7 +125,7 @@ endif()
     
 target_compile_options(nbody_app PRIVATE -O3)
 
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+if (CMAKE_BUILD_TYPE STREQUAL "Debug" OR NBODY_DEBUG_VALIDATION)
     target_compile_definitions(nbody_app PRIVATE _DEBUG)
 endif()
 

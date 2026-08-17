@@ -15,95 +15,255 @@ This implementation models gravitational interactions among multiple bodies and 
 
 ---
 
-## 🛠️ Build Instructions
+## 🛠️ Build instructions
 
-### 1. Configure the project
-```bash
-mkdir build && cd build
-cmake -DNBODY_BUILD_MODE=<BUILD_MODE> ..
-```
-Note: Add `-DCMAKE_BUILD_TYPE=Debug` to enable debug prints.
-### 2. Compile
-```
-make
-```
+Use a different build directory for every mode and configuration. This keeps
+CMake and TT-Metal artifacts from incompatible modes from being mixed.
 
----
-
-## 📦 Build Modes
-
-| Mode  | Description                                                                                |
-| ----- | ------------------------------------------------------------------------------------------ |
-| `None` | Builds the **default** CPU-only implementation in full FP64 precision. |
-| `_F32` | Builds the **CPU**-only mixed-precision version (FP32 and FP64). |
-| `_WH_MULTIHOST` | Builds the simulation for multiple **Wormhole (WH)** devices using only **L**-chip. |
-| `_WH_GEMM_MULTIHOST` | Builds the blocked 32x32 GEMM force kernel for one **Wormhole** per MPI rank. |
-| `_WH_MULTICHIP` | Builds the simulation for multiple **Wormhole (WH)** devices using both **L**-chip and **R**-chip. |
-| `_WH_MESH` | Builds the simulation for a **mesh configuration** of multiple **Wormhole (WH)** devices. |
-
-For a detailed comparison of the Wormhole data layouts, compute engines,
-reductions, device lifecycles, and current benchmark results, see
-[COMPUTE_KERNEL_REPORT.md](COMPUTE_KERNEL_REPORT.md).
-
-Note:
-Wormhole cards are currently configured in isolation.
-Mesh topology per MPI process follows a (1, 2) layout.
-
-The GEMM multi-host mode expects each MPI rank's target range to start on a
-32-particle boundary. Choose `N` so that the per-rank particle count is a
-multiple of 32. Configure it from a TT-Metal source tree containing this
-repository as `N-Body-Code`:
+On the validated Wormhole host, first select GCC 12 and the ULFM Open MPI
+installation:
 
 ```bash
-cmake -S N-Body-Code -B N-Body-Code/build \
-  -DNBODY_BUILD_MODE=_WH_GEMM_MULTIHOST
-cmake --build N-Body-Code/build -j
+cd ~/tt-metal/N-Body-Code
+export PATH=/opt/openmpi-v5.0.7-ulfm/bin:$PATH
+export LD_LIBRARY_PATH=/opt/openmpi-v5.0.7-ulfm/lib:$LD_LIBRARY_PATH
 ```
 
----
+The general configure/build pattern is:
 
-## 🚀 Run Instructions
-
-To execute the N-body simulation using **TT-Metal** and **MPI**, use the `tt-run` launcher with appropriate rank bindings and runtime arguments.
-
-### Syntax
 ```bash
-tt-run --rank-binding [rank-binding-yaml] --mpi-args "--bind-to core" ./build/nbody_app --Ncycle [time-cycles] --N [number-of-bodies]
+CC=/usr/bin/gcc-12 CXX=/usr/bin/g++-12 \
+cmake -S . -B <build-directory> \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DNBODY_BUILD_MODE=<mode> \
+  -DMPI_C_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicc \
+  -DMPI_CXX_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicxx
+
+cmake --build <build-directory> --target nbody_app -j8
 ```
-Example:  
+
+Building only `nbody_app` avoids compiling unrelated TT-Metal utilities.
+
+### Build modes
+
+| Mode | Execution and force implementation |
+|---|---|
+| `DEFAULT` | CPU direct all-pairs implementation using host `double` arithmetic. |
+| `_F32` | CPU direct all-pairs implementation with Float32 force arithmetic and `double` host state. |
+| `_GEMM_BASED` | CPU blocked 32×32 implementation using OpenBLAS. Set `OPENBLAS_ROOT` if OpenBLAS is not in a standard path. |
+| `_WH_MULTIHOST` | One 1×1 `MeshDevice` per MPI rank. Uses `nb_read.cpp`, `nb_compute.cpp`, and `nb_write.cpp`, compact 32-target × 32-source packing, SFPU pair arithmetic, and a persistent device/program lifecycle. |
+| `_WH_GEMM_MULTIHOST` | Experimental path with one 1×1 `MeshDevice` per rank. Uses augmented 32×32 matrices, Tensix matrix products, SFPU inverse-distance operations, on-device source-moment reduction, and a persistent lifecycle. Validate numerical accuracy for the intended input distribution; the augmented squared-distance expression can suffer cancellation for close pairs. |
+| `_WH_MULTICHIP` | One MPI process controls a 1×2 local Wormhole mesh using the `nb_*` kernel family. This mode retains its legacy expanded layout and is distinct from MPI multi-host execution. |
+| `_WH_MESH` | One MPI process controls a 1×2 `MeshDevice` using `mesh_read.cpp`, `mesh_compute.cpp`, and `mesh_write.cpp`. The current port uses the 32×32 target/source block layout and requires two visible Wormhole devices. |
+
+For detailed kernel equations and dataflow, see
+[FORCE_KERNEL_DETAILS.md](FORCE_KERNEL_DETAILS.md). For a mode-level comparison,
+see [COMPUTE_KERNEL_REPORT.md](COMPUTE_KERNEL_REPORT.md).
+
+### CPU build examples
+
+Default FP64 CPU:
+
+```bash
+cmake -S . -B build-cpu-fp64 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DNBODY_BUILD_MODE=DEFAULT
+cmake --build build-cpu-fp64 --target nbody_app -j8
 ```
-tt-run --rank-binding yamls/2_wh_rank_bindings.yaml --mpi-args "--bind-to core" ./build/nbody_app --Ncycle 3 --N 102400
+
+Mixed-precision CPU:
+
+```bash
+cmake -S . -B build-cpu-f32 \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DNBODY_BUILD_MODE=_F32
+cmake --build build-cpu-f32 --target nbody_app -j8
 ```
 
-Argument descriptions:
+OpenBLAS CPU GEMM:
 
-- --rank-binding [rank-binding-yaml]: Path to the YAML file defining rank-to-device bindings.
+```bash
+cmake -S . -B build-cpu-gemm \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DNBODY_BUILD_MODE=_GEMM_BASED \
+  -DOPENBLAS_ROOT=/path/to/openblas
+cmake --build build-cpu-gemm --target nbody_app -j8
+```
 
-- --mpi-args "--bind-to core": Ensures MPI processes are pinned to CPU cores for optimal performance.
+### Wormhole release builds
 
-- --Ncycle [time-cycles]: Number of simulation time cycles to run.
+MULTIHOST:
 
-- --N [number-of-bodies]: Number of bodies to simulate.
+```bash
+CC=/usr/bin/gcc-12 CXX=/usr/bin/g++-12 \
+cmake -S . -B build-wh-multihost-release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DNBODY_BUILD_MODE=_WH_MULTIHOST \
+  -DNBODY_DEBUG_VALIDATION=OFF \
+  -DNBODY_PHASE_TIMERS=ON \
+  -DNBODY_DEVICE_PROFILE=OFF \
+  -DNBODY_DEVICE_ROW_REDUCE=OFF \
+  -DMPI_C_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicc \
+  -DMPI_CXX_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicxx
+cmake --build build-wh-multihost-release --target nbody_app -j8
+```
 
-Note:
-The simulation runs with MPI, where each MPI process is mapped to a single Wormhole (WH) card.
-This configuration enables multi-device execution across multiple WH cards through TT-Metal, achieving distributed parallelism across hardware resources.
+GEMM MULTIHOST:
 
-### Performance options
+```bash
+CC=/usr/bin/gcc-12 CXX=/usr/bin/g++-12 \
+cmake -S . -B build-wh-gemm-release \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DNBODY_BUILD_MODE=_WH_GEMM_MULTIHOST \
+  -DNBODY_DEBUG_VALIDATION=OFF \
+  -DNBODY_PHASE_TIMERS=ON \
+  -DNBODY_DEVICE_PROFILE=OFF \
+  -DMPI_C_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicc \
+  -DMPI_CXX_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicxx
+cmake --build build-wh-gemm-release --target nbody_app -j8
+```
+
+MULTICHIP and MESH use the same command pattern with, respectively:
+
+```text
+-DNBODY_BUILD_MODE=_WH_MULTICHIP  and build directory build-wh-multichip-release
+-DNBODY_BUILD_MODE=_WH_MESH       and build directory build-wh-mesh-release
+```
+
+Both require two local devices visible to the process.
+
+### Validation builds
+
+Use `RelWithDebInfo` plus `NBODY_DEBUG_VALIDATION=ON`. Do not use full
+`CMAKE_BUILD_TYPE=Debug` for the embedded TT-Metal build: this revision can
+fail while linking auxiliary Tracy/TBB tools or architecture-specific HAL
+objects.
+
+```bash
+CC=/usr/bin/gcc-12 CXX=/usr/bin/g++-12 \
+cmake -S . -B build-wh-multihost-validation \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DNBODY_BUILD_MODE=_WH_MULTIHOST \
+  -DNBODY_DEBUG_VALIDATION=ON \
+  -DNBODY_PHASE_TIMERS=ON \
+  -DNBODY_DEVICE_PROFILE=OFF \
+  -DNBODY_DEVICE_ROW_REDUCE=OFF \
+  -DMPI_C_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicc \
+  -DMPI_CXX_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicxx
+cmake --build build-wh-multihost-validation --target nbody_app -j8
+```
+
+For GEMM validation, change the build directory to
+`build-wh-gemm-validation` and the mode to `_WH_GEMM_MULTIHOST`.
+
+The validator performs a double-precision host `O(N²)` calculation after each
+force evaluation. Start with `N=1024` or `N=4096`, not a production-size run.
+
+### Build options
+
+| Option | Default | Meaning |
+|---|---:|---|
+| `USE_OPENMP` | `ON` | Enable OpenMP in host calculations. |
+| `NBODY_PHASE_TIMERS` | `ON` | Print packing, setup, H2D, workload, D2H, and host-postprocessing time for the last force call. |
+| `NBODY_DEBUG_VALIDATION` | `OFF` | Compare device force results with a robust double-precision host reference and print error norms. |
+| `NBODY_DEVICE_PROFILE` | `OFF` | Compile device profiler events into the N-body compute kernels. |
+| `NBODY_DEVICE_ROW_REDUCE` | `OFF` | Experimental on-device row reduction for `_WH_MULTIHOST` and `_WH_MESH`; full-size output buffers are retained. |
+
+## 🚀 Run instructions
+
+All modes accept:
+
+```text
+--N <number-of-bodies>
+--Ncycle <number-of-integration-cycles>
+```
+
+CPU modes still initialize MPI and can be run with one process:
+
+```bash
+/opt/openmpi-v5.0.7-ulfm/bin/mpirun -np 1 \
+  ./build-cpu-fp64/nbody_app --Ncycle 3 --N 4096
+```
+
+### `tt-run`: one Wormhole per MPI rank
+
+The rank-binding files remain YAML, but their `mesh_graph_desc_path` values
+refer to MGD 2.0 Protobuf text files (`.textproto`). Each MPI rank owns a
+separate 1×1 mesh (`mesh_host_rank: 0`); force-result exchange between ranks is
+performed by MPI. The supplied descriptors declare the channel configuration
+required by MGD 2.0.
+
+Select the ULFM Open MPI installation before invoking `tt-run`:
+
+```bash
+export PATH=/opt/openmpi-v5.0.7-ulfm/bin:$PATH
+export LD_LIBRARY_PATH=/opt/openmpi-v5.0.7-ulfm/lib:$LD_LIBRARY_PATH
+```
+
+For a single-host run, use `--bare`.
+
+Single-rank MULTIHOST:
+
+```bash
+tt-run --bare \
+  --rank-binding yamls/1_wh_rank_bindings.yaml \
+  --mpi-args "--bind-to core" \
+  ./build-wh-multihost-release/nbody_app \
+  --Ncycle 3 --N 102400
+```
+
+Single-rank GEMM MULTIHOST:
+
+```bash
+tt-run --bare \
+  --rank-binding yamls/1_wh_rank_bindings.yaml \
+  --mpi-args "--bind-to core" \
+  ./build-wh-gemm-release/nbody_app \
+  --Ncycle 3 --N 102400
+```
+
+Two-rank execution uses `yamls/2_wh_rank_bindings.yaml`; four ranks use
+`yamls/4_wh_rank_bindings.yaml`. Each rank is bound to one Wormhole device:
+
+```bash
+tt-run \
+  --rank-binding yamls/2_wh_rank_bindings.yaml \
+  --mpi-args "--bind-to core" \
+  ./build-wh-multihost-release/nbody_app \
+  --Ncycle 3 --N 102400
+```
+
+For `_WH_GEMM_MULTIHOST`, each rank's target interval must begin on a
+32-particle boundary. Choose `N` and rank count so the particles per rank are a
+multiple of 32.
+
+### Local 1×2 modes
+
+`_WH_MULTICHIP` and `_WH_MESH` each create a 1×2 local `MeshDevice` inside one
+MPI process. They require a host exposing two devices to that process. They are
+not the same topology as the examples above, where each MPI rank sees one
+device. Use the rank-binding/mesh descriptor appropriate to the installed
+two-device system.
+
+### Performance and validation output
 
 See [FORCE_KERNEL_DETAILS.md](FORCE_KERNEL_DETAILS.md) for a detailed account
 of host packing, 32×32 all-pairs blocks, device calculations, accumulation,
 reduction, and output reconstruction in `_WH_MULTIHOST` and
 `_WH_GEMM_MULTIHOST`.
 
-Wormhole builds report the last force-call phases: host packing, one-time setup,
-H2D, workload, D2H, and host postprocessing. The report can be disabled with
-`-DNBODY_PHASE_TIMERS=OFF`.
+With `NBODY_PHASE_TIMERS=ON`, Wormhole builds report the last force call as:
+
+```text
+Last force phases (s): pack=... setup=... H2D=... workload=... D2H=... postprocess=...
+```
+
+This output is independent of Debug validation.
 
 Device profiler events are disabled by default. Enable them only for profiling
 with `-DNBODY_DEVICE_PROFILE=ON`.
 
-`-DNBODY_DEVICE_ROW_REDUCE=ON` enables the experimental SFPU row reduction for
+`NBODY_DEVICE_ROW_REDUCE=ON` enables the experimental SFPU row reduction for
 `_WH_MULTIHOST` and `_WH_MESH`. It deliberately retains full-tile output so the
 device reduction can be validated independently before compact buffers and a
 compact writer are introduced. Compare a small run against the default build
