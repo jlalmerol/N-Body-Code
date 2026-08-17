@@ -1,0 +1,23 @@
+mesh_descriptors {
+  name: "WH_1X1"
+  arch: WORMHOLE_B0
+  device_topology { dims: [1, 1] }
+  host_topology { dims: [1, 1] }
+  channels { count: 1 policy: STRICT }
+}
+
+graph_descriptors {
+  name: "FOUR_MPI_HOST_MESHES"
+  type: FABRIC
+  instances { mesh { mesh_descriptor: "WH_1X1" mesh_id: 0 } }
+  instances { mesh { mesh_descriptor: "WH_1X1" mesh_id: 1 } }
+  instances { mesh { mesh_descriptor: "WH_1X1" mesh_id: 2 } }
+  instances { mesh { mesh_descriptor: "WH_1X1" mesh_id: 3 } }
+}
+
+top_level_instance {
+  graph {
+    graph_descriptor: "FOUR_MPI_HOST_MESHES"
+    graph_id: 0
+  }
+}
