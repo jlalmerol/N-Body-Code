@@ -5,7 +5,7 @@
 #include <tt-metalium/work_split.hpp>
 #include <tt-metalium/device.hpp>
 
-#include "hostdevcommon/profiler_common.h"
+#include "hostdev/profiler_common.h"
 #include "tools/mem_bench/host_utils.hpp"
 #include <tt-metalium/distributed.hpp>
 #include "impl/context/metal_context.hpp"

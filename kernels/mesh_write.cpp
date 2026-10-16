@@ -48,13 +48,13 @@ void kernel_main() {
         uint32_t cb_adz_addr = get_read_ptr(cb_adz);
 
         const uint32_t target_tile = first_tile + i;
-        noc_async_write_tile(target_tile, ax, cb_ax_addr);
-        noc_async_write_tile(target_tile, ay, cb_ay_addr);
-        noc_async_write_tile(target_tile, az, cb_az_addr);
+        noc_async_write_page(target_tile, ax, cb_ax_addr);
+        noc_async_write_page(target_tile, ay, cb_ay_addr);
+        noc_async_write_page(target_tile, az, cb_az_addr);
 
-        noc_async_write_tile(target_tile, adx, cb_adx_addr);
-        noc_async_write_tile(target_tile, ady, cb_ady_addr);
-        noc_async_write_tile(target_tile, adz, cb_adz_addr);
+        noc_async_write_page(target_tile, adx, cb_adx_addr);
+        noc_async_write_page(target_tile, ady, cb_ady_addr);
+        noc_async_write_page(target_tile, adz, cb_adz_addr);
 
         noc_async_write_barrier();
 

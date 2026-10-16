@@ -48,13 +48,13 @@ void kernel_main() {
 	uint32_t cb_ady_addr = get_read_ptr(cb_ady);
 	uint32_t cb_adz_addr = get_read_ptr(cb_adz);
 
-        noc_async_write_tile(i, ax, cb_ax_addr);
-	noc_async_write_tile(i, ay, cb_ay_addr);
-	noc_async_write_tile(i, az, cb_az_addr);
+        noc_async_write_page(i, ax, cb_ax_addr);
+	noc_async_write_page(i, ay, cb_ay_addr);
+	noc_async_write_page(i, az, cb_az_addr);
 
-	noc_async_write_tile(i, adx, cb_adx_addr);
-	noc_async_write_tile(i, ady, cb_ady_addr);
-	noc_async_write_tile(i, adz, cb_adz_addr);
+	noc_async_write_page(i, adx, cb_adx_addr);
+	noc_async_write_page(i, ady, cb_ady_addr);
+	noc_async_write_page(i, adz, cb_adz_addr);
 
         noc_async_write_barrier();
 

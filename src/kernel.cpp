@@ -17,7 +17,7 @@
 #include <tt-metalium/tt_metal.hpp>
 #include <tt-metalium/device.hpp>
 
-#include "hostdevcommon/profiler_common.h"
+#include "hostdev/profiler_common.h"
 #include "tools/mem_bench/host_utils.hpp"
 #include <tt-metalium/distributed.hpp>
 #include "impl/context/metal_context.hpp"
@@ -47,6 +47,16 @@ using namespace tt::tt_metal;
 
 #if defined(_WH_MULTIHOST) || defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
 using namespace tt::tt_metal::distributed;
+
+namespace {
+// Timed builds fence phase boundaries; untimed builds rely on queue ordering
+// until result readback. Host input vectors stay alive through that readback.
+#ifdef NBODY_PHASE_TIMERS
+constexpr bool block_for_phase_timers = true;
+#else
+constexpr bool block_for_phase_timers = false;
+#endif
+}  // namespace
 #endif
 
 #define BLKSIZE 32
@@ -732,7 +742,7 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
         EnqueueWriteBuffer(cq, pwj, pw_j_data, false);
 
         auto start = std::chrono::high_resolution_clock::now();
-        EnqueueProgram(cq, program, true);
+        EnqueueProgram(cq, program, block_for_phase_timers);
         auto end = std::chrono::high_resolution_clock::now();
 
         EnqueueReadBuffer(cq, ax, all_ax_data[device_idx], true);
@@ -814,11 +824,6 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
 
     using PhaseClock = std::chrono::steady_clock;
     const auto phase_setup_begin = PhaseClock::now();
-#ifdef NBODY_PHASE_TIMERS
-    constexpr bool force_h2d_phase_boundary = true;
-#else
-    constexpr bool force_h2d_phase_boundary = false;
-#endif
 
 #if defined(_WH_MULTIHOST)
     if (!wh_sfpu_context) wh_sfpu_context = std::make_unique<WhSfpuPersistentContext>();
@@ -1216,13 +1221,15 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     EnqueueWriteMeshBuffer(cq, vy_j, vy_j_data, false /* blocking */);
     EnqueueWriteMeshBuffer(cq, vz_i, vz_data, false /* blocking */);
     EnqueueWriteMeshBuffer(cq, vz_j, vz_j_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, pwj, pw_j_data, force_h2d_phase_boundary);
+    EnqueueWriteMeshBuffer(cq, pwj, pw_j_data, block_for_phase_timers);
 
     const auto phase_workload_begin = PhaseClock::now();
     sys.phase_h2d = std::chrono::duration<double>(phase_workload_begin - phase_h2d_begin).count();
-    EnqueueMeshWorkload(cq, persistent.workload, true /* blocking */);
+    EnqueueMeshWorkload(cq, persistent.workload, block_for_phase_timers);
     const auto phase_d2h_begin = PhaseClock::now();
-    sys.phase_workload = std::chrono::duration<double>(phase_d2h_begin - phase_workload_begin).count();
+    // Without a workload fence this interval measures submission, not execution.
+    sys.phase_workload = block_for_phase_timers
+        ? std::chrono::duration<double>(phase_d2h_begin - phase_workload_begin).count() : 0.0;
     sys.kernel_time = sys.phase_workload;
 
     std::vector<float> ax_data;

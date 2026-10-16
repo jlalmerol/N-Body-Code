@@ -52,11 +52,6 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y,
                        double* __restrict h_adot_z, Sys& sys) {
     using PhaseClock = std::chrono::steady_clock;
     const auto phase_pack_begin = PhaseClock::now();
-#ifdef NBODY_PHASE_TIMERS
-    constexpr bool force_h2d_phase_boundary = true;
-#else
-    constexpr bool force_h2d_phase_boundary = false;
-#endif
     if ((sys.start % WHG_TILE) != 0) {
         throw std::runtime_error("_WH_GEMM_MULTIHOST requires MPI target ranges aligned to 32 particles");
     }
@@ -196,13 +191,15 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y,
     EnqueueWriteMeshBuffer(cq,context.ar_buf,ar,false); EnqueueWriteMeshBuffer(cq,context.av_buf,av,false);
     EnqueueWriteMeshBuffer(cq,context.br_buf,br,false); EnqueueWriteMeshBuffer(cq,context.bv_buf,bv,false);
     EnqueueWriteMeshBuffer(cq,context.p_buf,p,false);
-    EnqueueWriteMeshBuffer(cq,context.mask_buf,masks,force_h2d_phase_boundary);
+    EnqueueWriteMeshBuffer(cq,context.mask_buf,masks,block_for_phase_timers);
 
     const auto phase_workload_begin = PhaseClock::now();
     sys.phase_h2d = std::chrono::duration<double>(phase_workload_begin - phase_h2d_begin).count();
-    EnqueueMeshWorkload(cq, context.workload, true);
+    EnqueueMeshWorkload(cq, context.workload, block_for_phase_timers);
     const auto phase_d2h_begin = PhaseClock::now();
-    sys.phase_workload = std::chrono::duration<double>(phase_d2h_begin - phase_workload_begin).count();
+    // Without a workload fence this interval measures submission, not execution.
+    sys.phase_workload = block_for_phase_timers
+        ? std::chrono::duration<double>(phase_d2h_begin - phase_workload_begin).count() : 0.0;
     std::vector<float> hw_physical(target_tiles*WHG_TILE_ELEMS), hu_physical(target_tiles*WHG_TILE_ELEMS);
     EnqueueReadMeshBuffer(cq, hw_physical, context.hw_buf, true);
     EnqueueReadMeshBuffer(cq, hu_physical, context.hu_buf, true);

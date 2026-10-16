@@ -44,7 +44,7 @@ endif()
 option(USE_OPENMP "Enable OpenMP for the force calculation kernel" ON)
 option(NBODY_DEVICE_PROFILE "Enable device-side N-body profiler events" OFF)
 option(NBODY_DEVICE_ROW_REDUCE "Experimentally reduce 32-column SFPU outputs on device" OFF)
-option(NBODY_PHASE_TIMERS "Print force-calculation phase timings" ON)
+option(NBODY_PHASE_TIMERS "Measure and print force-calculation phases using blocking phase boundaries" OFF)
 option(NBODY_DEBUG_VALIDATION "Run the double-precision host force validator" OFF)
 
 if (NBODY_DEVICE_PROFILE)

@@ -100,7 +100,7 @@ cmake -S . -B build-wh-multihost-release \
   -DCMAKE_BUILD_TYPE=Release \
   -DNBODY_BUILD_MODE=_WH_MULTIHOST \
   -DNBODY_DEBUG_VALIDATION=OFF \
-  -DNBODY_PHASE_TIMERS=ON \
+  -DNBODY_PHASE_TIMERS=OFF \
   -DNBODY_DEVICE_PROFILE=OFF \
   -DNBODY_DEVICE_ROW_REDUCE=OFF \
   -DMPI_C_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicc \
@@ -116,7 +116,7 @@ cmake -S . -B build-wh-gemm-release \
   -DCMAKE_BUILD_TYPE=Release \
   -DNBODY_BUILD_MODE=_WH_GEMM_MULTIHOST \
   -DNBODY_DEBUG_VALIDATION=OFF \
-  -DNBODY_PHASE_TIMERS=ON \
+  -DNBODY_PHASE_TIMERS=OFF \
   -DNBODY_DEVICE_PROFILE=OFF \
   -DMPI_C_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicc \
   -DMPI_CXX_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicxx
@@ -145,7 +145,7 @@ cmake -S . -B build-wh-multihost-validation \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DNBODY_BUILD_MODE=_WH_MULTIHOST \
   -DNBODY_DEBUG_VALIDATION=ON \
-  -DNBODY_PHASE_TIMERS=ON \
+  -DNBODY_PHASE_TIMERS=OFF \
   -DNBODY_DEVICE_PROFILE=OFF \
   -DNBODY_DEVICE_ROW_REDUCE=OFF \
   -DMPI_C_COMPILER=/opt/openmpi-v5.0.7-ulfm/bin/mpicc \
@@ -164,7 +164,7 @@ force evaluation. Start with `N=1024` or `N=4096`, not a production-size run.
 | Option | Default | Meaning |
 |---|---:|---|
 | `USE_OPENMP` | `ON` | Enable OpenMP in host calculations. |
-| `NBODY_PHASE_TIMERS` | `ON` | Print packing, setup, H2D, workload, D2H, and host-postprocessing time for the last force call. |
+| `NBODY_PHASE_TIMERS` | `OFF` | Print packing, setup, H2D, workload, D2H, and host-postprocessing time for the last force call. |
 | `NBODY_DEBUG_VALIDATION` | `OFF` | Compare device force results with a robust double-precision host reference and print error norms. |
 | `NBODY_DEVICE_PROFILE` | `OFF` | Compile device profiler events into the N-body compute kernels. |
 | `NBODY_DEVICE_ROW_REDUCE` | `OFF` | Experimental on-device row reduction for `_WH_MULTIHOST` and `_WH_MESH`; full-size output buffers are retained. |
@@ -258,7 +258,19 @@ With `NBODY_PHASE_TIMERS=ON`, Wormhole builds report the last force call as:
 Last force phases (s): pack=... setup=... H2D=... workload=... D2H=... postprocess=...
 ```
 
-This output is independent of Debug validation.
+This output is independent of Debug validation. `NBODY_PHASE_TIMERS` defaults
+to `OFF`. When explicitly enabled, the final input write and workload submission block to separate H2D,
+workload, and D2H measurements. With `-DNBODY_PHASE_TIMERS=OFF`, all input
+writes and workload submissions in the SFPU and GEMM mesh paths request
+non-blocking execution on the same command queue. Queue ordering preserves
+write-before-execute dependencies; blocking result reads wait before the CPU
+consumes results and before host input vectors are destroyed. Untimed builds
+do not report enqueue latency as device kernel execution time.
+
+These flags request asynchronous submission; actual overlap depends on the
+SDK dispatch backend. In particular, slow-dispatch buffer transfers can still
+execute synchronously inside TT-Metal. The force calculation itself still
+waits for its results before returning.
 
 Device profiler events are disabled by default. Enable them only for profiling
 with `-DNBODY_DEVICE_PROFILE=ON`.

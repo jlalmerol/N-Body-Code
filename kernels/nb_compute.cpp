@@ -3,7 +3,8 @@
 #include "api/compute/eltwise_unary/sfpu_split_includes.h"
 #include "api/compute/eltwise_binary.h"
 #include "api/compute/common.h"
-#include "api/compute/eltwise_unary/eltwise_unary.h"
+#include "api/compute/compute_kernel_hw_startup.h"
+#include "api/compute/reconfig_data_format.h"
 #include "api/compute/eltwise_binary_sfpu.h"
 #include "api/compute/binary_bitwise_sfpu.h"
 #include "api/compute/binary_shift.h"
@@ -249,7 +250,8 @@ void kernel_main() {
 
 	const uint32_t end_tile_id = start_tile_id + n_tiles;
 
-	unary_op_init_common(cb_pxi, cb_ax);
+	compute_kernel_hw_startup(cb_pxi, cb_ax);
+	copy_init(cb_pxi);
 	fill_tile_init();
 	sub_binary_tile_init();
 	add_binary_tile_init();
@@ -580,7 +582,9 @@ void kernel_main() {
 		// workload can exit immediately, but cores assigned another target tile
 		// must restore the elementwise pipeline before starting that tile.
 		if (i + 1 < end_tile_id) {
-			unary_op_init_common(cb_pxi, cb_ax);
+			reconfig_data_format(cb_pxi, cb_pxi);
+			pack_reconfig_data_format(cb_ax);
+			copy_init(cb_pxi);
 			fill_tile_init();
 			sub_binary_tile_init();
 			add_binary_tile_init();

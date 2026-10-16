@@ -73,13 +73,13 @@ void kernel_main() {
         uint32_t cb_vyi_addr = get_write_ptr(cb_vyi);
         uint32_t cb_vzi_addr = get_write_ptr(cb_vzi);
 
-        noc_async_read_tile(i, pxi, cb_pxi_addr);
-        noc_async_read_tile(i, pyi, cb_pyi_addr);
-        noc_async_read_tile(i, pzi, cb_pzi_addr);
+        noc_async_read_page(i, pxi, cb_pxi_addr);
+        noc_async_read_page(i, pyi, cb_pyi_addr);
+        noc_async_read_page(i, pzi, cb_pzi_addr);
 
-        noc_async_read_tile(i, vxi, cb_vxi_addr);
-        noc_async_read_tile(i, vyi, cb_vyi_addr);
-        noc_async_read_tile(i, vzi, cb_vzi_addr);
+        noc_async_read_page(i, vxi, cb_vxi_addr);
+        noc_async_read_page(i, vyi, cb_vyi_addr);
+        noc_async_read_page(i, vzi, cb_vzi_addr);
 
         noc_async_read_barrier();
 
@@ -114,15 +114,15 @@ void kernel_main() {
 
             uint32_t cb_pwj_addr = get_write_ptr(cb_pwj);
 
-            noc_async_read_tile(j, pxj, cb_pxj_addr);
-            noc_async_read_tile(j, pyj, cb_pyj_addr);
-            noc_async_read_tile(j, pzj, cb_pzj_addr);
+            noc_async_read_page(j, pxj, cb_pxj_addr);
+            noc_async_read_page(j, pyj, cb_pyj_addr);
+            noc_async_read_page(j, pzj, cb_pzj_addr);
 
-            noc_async_read_tile(j, vxj, cb_vxj_addr);
-            noc_async_read_tile(j, vyj, cb_vyj_addr);
-            noc_async_read_tile(j, vzj, cb_vzj_addr);
+            noc_async_read_page(j, vxj, cb_vxj_addr);
+            noc_async_read_page(j, vyj, cb_vyj_addr);
+            noc_async_read_page(j, vzj, cb_vzj_addr);
 
-            noc_async_read_tile(j, pwj, cb_pwj_addr);
+            noc_async_read_page(j, pwj, cb_pwj_addr);
 
             noc_async_read_barrier(); 
 

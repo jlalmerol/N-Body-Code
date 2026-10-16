@@ -10,7 +10,7 @@ void kernel_main(){
     const InterleavedAddrGenFast<true> hu={.bank_base_address=hu_addr,.page_size=bytes,.data_format=DataFormat::Float32};
     for(uint32_t i=first;i<first+count;++i){
         cb_wait_front(hw_cb,1); cb_wait_front(hu_cb,1);
-        noc_async_write_tile(i,hw,get_read_ptr(hw_cb)); noc_async_write_tile(i,hu,get_read_ptr(hu_cb));
+        noc_async_write_page(i,hw,get_read_ptr(hw_cb)); noc_async_write_page(i,hu,get_read_ptr(hu_cb));
         noc_async_write_barrier(); cb_pop_front(hw_cb,1); cb_pop_front(hu_cb,1);
     }
 }

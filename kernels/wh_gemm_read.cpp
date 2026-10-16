@@ -31,9 +31,9 @@ void kernel_main() {
             const uint32_t mask_id=(diag?1u:0u)|(ti?2u:0u)|(sj?4u:0u);
             cb_reserve_back(ar_cb,1); cb_reserve_back(br_cb,1); cb_reserve_back(av_cb,1);
             cb_reserve_back(bv_cb,1); cb_reserve_back(p_cb,1); cb_reserve_back(mask_cb,1);
-            noc_async_read_tile(it,ar,get_write_ptr(ar_cb)); noc_async_read_tile(jt,br,get_write_ptr(br_cb));
-            noc_async_read_tile(it,av,get_write_ptr(av_cb)); noc_async_read_tile(jt,bv,get_write_ptr(bv_cb));
-            noc_async_read_tile(jt,p,get_write_ptr(p_cb)); noc_async_read_tile(mask_id,mask,get_write_ptr(mask_cb));
+            noc_async_read_page(it,ar,get_write_ptr(ar_cb)); noc_async_read_page(jt,br,get_write_ptr(br_cb));
+            noc_async_read_page(it,av,get_write_ptr(av_cb)); noc_async_read_page(jt,bv,get_write_ptr(bv_cb));
+            noc_async_read_page(jt,p,get_write_ptr(p_cb)); noc_async_read_page(mask_id,mask,get_write_ptr(mask_cb));
             noc_async_read_barrier(); cb_push_back(ar_cb,1); cb_push_back(br_cb,1);
             cb_push_back(av_cb,1); cb_push_back(bv_cb,1);
             cb_push_back(p_cb,1); cb_push_back(mask_cb,1);
