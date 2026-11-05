@@ -1,6 +1,8 @@
 #include <cstdint>
+#include "tools/profiler/kernel_profiler.hpp"
 
 void kernel_main() {
+    DeviceZoneScopedN("NBody device write");
     uint32_t n_tiles = get_arg_val<uint32_t>(0);
     uint32_t first_tile = get_arg_val<uint32_t>(1);
 

@@ -198,6 +198,7 @@ inline void reduce_rows_to_full_tile() {
 #endif
 
 void kernel_main() {
+    DeviceZoneScopedN("NBody device compute");
 	uint32_t n_tiles = get_arg_val<uint32_t>(0);
 	uint32_t N = get_arg_val<uint32_t>(1);
 

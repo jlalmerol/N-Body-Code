@@ -9,6 +9,7 @@
 #include "api/compute/eltwise_unary/eltwise_unary.h"
 #include "api/compute/eltwise_unary/fill.h"
 #include "api/compute/eltwise_unary/rsqrt.h"
+#include "tools/profiler/kernel_profiler.hpp"
 
 static inline void one_tile_mm(uint32_t a,uint32_t b,uint32_t out){
     cb_wait_front(a,1); cb_wait_front(b,1); cb_reserve_back(out,1);
@@ -28,6 +29,8 @@ void kernel_main(){
     constexpr uint32_t w=get_compile_time_arg_val(10),u=get_compile_time_arg_val(11);
     constexpr uint32_t accw=get_compile_time_arg_val(12),accu=get_compile_time_arg_val(13);
     compute_kernel_hw_startup<SrcOrder::Reverse>(ar,br,hw);
+    // Profile compute after the required hardware startup.
+    DeviceZoneScopedN("NBody device compute");
     for(uint32_t it=0;it<count;++it){
         cb_reserve_back(accw,1); cb_reserve_back(accu,1); tile_regs_acquire();
         fill_tile_init();

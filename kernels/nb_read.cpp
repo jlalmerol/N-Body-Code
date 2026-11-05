@@ -1,7 +1,9 @@
 #include "api/dataflow/dataflow_api.h"
 #include <cstdint>
+#include "tools/profiler/kernel_profiler.hpp"
 
 void kernel_main() {
+    DeviceZoneScopedN("NBody device read");
     uint32_t n_tiles = get_arg_val<uint32_t>(0);
     uint32_t start_tile_id = get_arg_val<uint32_t>(1);
     uint32_t N = get_arg_val<uint32_t>(2);

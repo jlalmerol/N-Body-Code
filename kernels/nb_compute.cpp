@@ -251,6 +251,8 @@ void kernel_main() {
 	const uint32_t end_tile_id = start_tile_id + n_tiles;
 
 	compute_kernel_hw_startup(cb_pxi, cb_ax);
+    // Profile compute after the required hardware startup.
+    DeviceZoneScopedN("NBody device compute");
 	copy_init(cb_pxi);
 	fill_tile_init();
 	sub_binary_tile_init();

@@ -283,6 +283,63 @@ before benchmarking it.
 
 ---
 
+## Tracy profiling
+
+Wormhole host paths use `ZoneScopedN` for `NBody force calculation`,
+`NBody H2D`, `NBody workload`, and `NBody D2H`. TT-Metal supplies the
+Tracy client; configure the device build with `-DENABLE_TRACY=ON`.
+CPU-only builds do not depend on Tracy.
+
+Use `-DNBODY_PHASE_TIMERS=ON` to fence transfers and workload execution
+when measuring separate elapsed phases. With phase timers off, the H2D
+and workload scopes measure API submission; D2H can include waiting for
+outstanding device work. Profiling fences change overlap and throughput.
+The first force call also includes device setup and kernel compilation.
+
+All three device kernel families have `DeviceZoneScopedN` scopes named
+`NBody device read`, `NBody device compute`, and `NBody device write`.
+These include circular-buffer/NoC waits (compute scopes exclude hardware startup);
+reader, compute, and writer can overlap, so their times should not be added.
+Set `TT_METAL_DEVICE_PROFILER=1` at runtime to enable TT-Metal device events.
+`NBODY_DEVICE_PROFILE=ON` additionally enables the existing per-tile SFPU
+compute events. Device events use TT-Metal's device profiler and its
+postprocessing workflow; a plain Tracy capture records the host scopes.
+
+For the simulator container, start Colima and the container if needed:
+
+```bash
+colima start
+docker start gravityx-tt
+docker exec -it gravityx-tt bash
+```
+
+Inside the container, build the instrumented sources in
+`/opt/tt-metal/N-Body-Code`. In one container terminal, start the matching
+SDK capture tool before launching the application:
+
+```bash
+/opt/tt-metal/N-Body-Code/build-wh-multihost-release/tools/profiler/bin/tracy-capture \
+  -o /tmp/nbody.tracy -f
+```
+
+In another container terminal:
+
+```bash
+cd /opt/tt-metal
+export TT_METAL_HOME=/opt/tt-metal
+export TT_METAL_SIMULATOR=/opt/mylibrary/ttsim/1.10.1/lib/libttsim_wh_aarch64.so
+export TT_METAL_SLOW_DISPATCH_MODE=1
+export TT_METAL_DISABLE_SFPLOADMACRO=1
+export OMPI_MCA_ess_singleton_isolated=1
+OMP_NUM_THREADS=2 ./N-Body-Code/build-wh-multihost-release/nbody_app --N 32 --Ncycle 1
+```
+
+Copy `/tmp/nbody.tracy` out with `docker cp` and open it in a matching
+Tracy viewer. Simulator runs validate instrumentation and execution;
+measure real kernel and transfer performance on hardware.
+
+---
+
 ## ⚙️ Software and Environment Specifications
 The following software and hardware environment was used for development, testing, and validation.
 Collected from tt-smi snapshot.

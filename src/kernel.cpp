@@ -11,6 +11,7 @@
 #endif
 
 #if defined(_WH_MULTIHOST) || defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
+#include <tracy/Tracy.hpp>
 #include <tt-metalium/core_coord.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/work_split.hpp>
@@ -821,6 +822,7 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
                       double* __restrict h_vel_z, double* __restrict h_acc_x, double* __restrict h_acc_y,
                       double* __restrict h_acc_z, double* __restrict h_adot_x, double* __restrict h_adot_y,
                       double* __restrict h_adot_z, Sys& sys) {
+    ZoneScopedN("NBody force calculation");
 
     using PhaseClock = std::chrono::steady_clock;
     const auto phase_setup_begin = PhaseClock::now();
@@ -1208,24 +1210,30 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     const auto phase_h2d_begin = PhaseClock::now();
     sys.phase_host_pack = std::chrono::duration<double>(phase_h2d_begin - phase_pack_begin).count();
 
-    EnqueueWriteMeshBuffer(cq, px_i, px_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, px_j, px_j_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, py_i, py_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, py_j, py_j_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, pz_i, pz_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, pz_j, pz_j_data, false /* blocking */);
+    {
+        ZoneScopedN("NBody H2D");
+        EnqueueWriteMeshBuffer(cq, px_i, px_data, false /* blocking */);
+        EnqueueWriteMeshBuffer(cq, px_j, px_j_data, false /* blocking */);
+        EnqueueWriteMeshBuffer(cq, py_i, py_data, false /* blocking */);
+        EnqueueWriteMeshBuffer(cq, py_j, py_j_data, false /* blocking */);
+        EnqueueWriteMeshBuffer(cq, pz_i, pz_data, false /* blocking */);
+        EnqueueWriteMeshBuffer(cq, pz_j, pz_j_data, false /* blocking */);
 
-    EnqueueWriteMeshBuffer(cq, vx_i, vx_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, vx_j, vx_j_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, vy_i, vy_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, vy_j, vy_j_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, vz_i, vz_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, vz_j, vz_j_data, false /* blocking */);
-    EnqueueWriteMeshBuffer(cq, pwj, pw_j_data, block_for_phase_timers);
+        EnqueueWriteMeshBuffer(cq, vx_i, vx_data, false /* blocking */);
+        EnqueueWriteMeshBuffer(cq, vx_j, vx_j_data, false /* blocking */);
+        EnqueueWriteMeshBuffer(cq, vy_i, vy_data, false /* blocking */);
+        EnqueueWriteMeshBuffer(cq, vy_j, vy_j_data, false /* blocking */);
+        EnqueueWriteMeshBuffer(cq, vz_i, vz_data, false /* blocking */);
+        EnqueueWriteMeshBuffer(cq, vz_j, vz_j_data, false /* blocking */);
+        EnqueueWriteMeshBuffer(cq, pwj, pw_j_data, block_for_phase_timers);
+    }
 
     const auto phase_workload_begin = PhaseClock::now();
     sys.phase_h2d = std::chrono::duration<double>(phase_workload_begin - phase_h2d_begin).count();
-    EnqueueMeshWorkload(cq, persistent.workload, block_for_phase_timers);
+    {
+        ZoneScopedN("NBody workload");
+        EnqueueMeshWorkload(cq, persistent.workload, block_for_phase_timers);
+    }
     const auto phase_d2h_begin = PhaseClock::now();
     // Without a workload fence this interval measures submission, not execution.
     sys.phase_workload = block_for_phase_timers
@@ -1241,13 +1249,16 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     ax_data.resize(px_data.size()); ay_data.resize(px_data.size()); az_data.resize(px_data.size());
     adx_data.resize(px_data.size()); ady_data.resize(px_data.size()); adz_data.resize(px_data.size());
 
-    EnqueueReadMeshBuffer(cq, ax_data, ax, true /* blocking */);
-    EnqueueReadMeshBuffer(cq, ay_data, ay, true /* blocking */);
-    EnqueueReadMeshBuffer(cq, az_data, az, true /* blocking */);
+    {
+        ZoneScopedN("NBody D2H");
+        EnqueueReadMeshBuffer(cq, ax_data, ax, true /* blocking */);
+        EnqueueReadMeshBuffer(cq, ay_data, ay, true /* blocking */);
+        EnqueueReadMeshBuffer(cq, az_data, az, true /* blocking */);
 
-    EnqueueReadMeshBuffer(cq, adx_data, adx, true /* blocking */);
-    EnqueueReadMeshBuffer(cq, ady_data, ady, true /* blocking */);
-    EnqueueReadMeshBuffer(cq, adz_data, adz, true /* blocking */);
+        EnqueueReadMeshBuffer(cq, adx_data, adx, true /* blocking */);
+        EnqueueReadMeshBuffer(cq, ady_data, ady, true /* blocking */);
+        EnqueueReadMeshBuffer(cq, adz_data, adz, true /* blocking */);
+    }
     const auto phase_post_begin = PhaseClock::now();
     sys.phase_d2h = std::chrono::duration<double>(phase_post_begin - phase_d2h_begin).count();
 
