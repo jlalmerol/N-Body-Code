@@ -305,6 +305,70 @@ Set `TT_METAL_DEVICE_PROFILER=1` at runtime to enable TT-Metal device events.
 compute events. Device events use TT-Metal's device profiler and its
 postprocessing workflow; a plain Tracy capture records the host scopes.
 
+### Native operation reports on the server
+
+The TTNN benchmarks assign a fresh program runtime ID and emit a JSON
+operation record for each invocation. N-body now supplies the same report
+protocol directly from Metalium: `NBodySFPU` or `NBodyGEMM` operations,
+per-device operation IDs, and the actual packed Float32 buffer shapes.
+The records are enabled by `TTNN_OP_PROFILER=1`, which `python -m tracy -r`
+sets automatically. A final device-profiler read runs before closing the mesh.
+No TTNN library or Python model wrapper is needed.
+
+After syncing these sources to `~/tt-metal/N-Body-Code` on the server,
+rebuild the application using the existing Tracy-enabled build configuration:
+
+```bash
+cd ~/tt-metal/N-Body-Code
+cmake --build build-wh-tracy --target nbody_app tracy-capture tracy-csvexport -j8
+```
+
+Activate the server's TT-Metal Python environment and MPI environment as
+in the build instructions above. For hardware, unset simulator variables:
+
+```bash
+unset TT_METAL_SIMULATOR TT_METAL_SLOW_DISPATCH_MODE TT_METAL_DISABLE_SFPLOADMACRO
+export TT_METAL_HOME="$HOME/tt-metal"
+bash scripts/profile_tracy.sh 1024 3
+```
+
+The runner uses one process and one device. It runs the Tracy wrapper,
+checks for **four distinct operation rows** (initialization plus three force
+calls), and invokes `tt-perf-report --no-advice --csv perf_report.csv` in
+the timestamped report directory, matching the existing accelerator benchmark
+scripts. It also finds pipx's `$HOME/.local/bin/tt-perf-report` if it is
+missing from `PATH`. Override paths with `NBODY_BUILD_DIR`, `PYTHON_BIN`, or
+`TT_PERF_REPORT`; the optional third argument is a new output directory.
+The runner never silently drops an unmatched operation to make a report pass.
+
+To run the two tools manually, from `~/tt-metal`:
+
+```bash
+export PYTHONPATH="$TT_METAL_HOME/tools:$TT_METAL_HOME${PYTHONPATH:+:$PYTHONPATH}"
+python -m tracy -o "$PWD/generated/nbody-tracy-new" -r -p \
+  --tracy-tools-folder "$PWD/N-Body-Code/build-wh-tracy/tools/profiler/bin" \
+  "$PWD/N-Body-Code/build-wh-tracy/nbody_app" --N 1024 --Ncycle 3
+
+# Use the new timestamped report path printed by Tracy:
+"$HOME/.local/bin/tt-perf-report" /path/to/ops_perf_results_TIMESTAMP.csv \
+  --no-advice --csv /path/to/perf_report.csv
+```
+
+A custom N-body operation can be reported as unclassified by `tt-perf-report`.
+Its duration and core count remain usable. No matmul FLOP model is supplied
+for the SFPU force kernel; do not interpret missing throughput estimates as
+zero throughput. The raw operation CSV retains per-RISC durations. Existing
+`NBody H2D`, `NBody workload`, and `NBody D2H` scopes remain in the trace.
+
+Validation: the simulator build compiles both SFPU and GEMM host paths, and
+captured operation records are accepted by the SDK postprocessor and
+`tt-perf-report`. The available simulator/SDK combination drops the final
+device invocation in repeated-run captures and reports a zero device clock.
+Offline processing of the three fully captured invocations validated the
+report schema; this is not a passing four-operation device capture or a
+hardware timing measurement. Run the guarded workflow on hardware to verify
+all four device rows with the server SDK.
+
 For the simulator container, start Colima and the container if needed:
 
 ```bash

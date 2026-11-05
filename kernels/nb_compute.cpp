@@ -253,7 +253,7 @@ void kernel_main() {
 	compute_kernel_hw_startup(cb_pxi, cb_ax);
     // Profile compute after the required hardware startup.
     DeviceZoneScopedN("NBody device compute");
-	copy_init(cb_pxi);
+	copy_tile_to_dst_init_short(cb_pxi);
 	fill_tile_init();
 	sub_binary_tile_init();
 	add_binary_tile_init();
@@ -586,7 +586,7 @@ void kernel_main() {
 		if (i + 1 < end_tile_id) {
 			reconfig_data_format(cb_pxi, cb_pxi);
 			pack_reconfig_data_format(cb_ax);
-			copy_init(cb_pxi);
+			copy_tile_to_dst_init_short(cb_pxi);
 			fill_tile_init();
 			sub_binary_tile_init();
 			add_binary_tile_init();

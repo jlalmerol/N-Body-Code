@@ -38,6 +38,7 @@ std::unique_ptr<WhgPersistentContext> whg_context;
 
 void shutdown_force_calculation_backend() {
     if (whg_context && whg_context->mesh_device) {
+        nbody_profiling::flush_device(*whg_context->mesh_device);
         whg_context->mesh_device->close();
     }
     whg_context.reset();
@@ -201,6 +202,10 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y,
     sys.phase_h2d = std::chrono::duration<double>(phase_workload_begin - phase_h2d_begin).count();
     {
         ZoneScopedN("NBody workload");
+        nbody_profiling::record_workload(
+            *context.mesh_device, context.workload, "NBodyGEMM", sys.N, sys.num_cores,
+            {ar.size(), av.size(), br.size(), bv.size(), p.size(), masks.size()},
+            {target_tiles * WHG_TILE_ELEMS, target_tiles * WHG_TILE_ELEMS});
         EnqueueMeshWorkload(cq, context.workload, block_for_phase_timers);
     }
     const auto phase_d2h_begin = PhaseClock::now();

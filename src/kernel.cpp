@@ -11,6 +11,7 @@
 #endif
 
 #if defined(_WH_MULTIHOST) || defined(_WH_GEMM_MULTIHOST) || defined(_WH_MULTICHIP) || defined(_WH_MESH)
+#include "nbody_profiler.h"
 #include <tracy/Tracy.hpp>
 #include <tt-metalium/core_coord.hpp>
 #include <tt-metalium/host_api.hpp>
@@ -18,7 +19,11 @@
 #include <tt-metalium/tt_metal.hpp>
 #include <tt-metalium/device.hpp>
 
+#if __has_include("hostdevcommon/profiler_common.h")
+#include "hostdevcommon/profiler_common.h"
+#else
 #include "hostdev/profiler_common.h"
+#endif
 #include "tools/mem_bench/host_utils.hpp"
 #include <tt-metalium/distributed.hpp>
 #include "impl/context/metal_context.hpp"
@@ -812,7 +817,10 @@ std::unique_ptr<WhSfpuPersistentContext> wh_sfpu_context;
 
 void shutdown_force_calculation_backend() {
 #if defined(_WH_MULTIHOST)
-    if (wh_sfpu_context && wh_sfpu_context->mesh_device) wh_sfpu_context->mesh_device->close();
+    if (wh_sfpu_context && wh_sfpu_context->mesh_device) {
+        nbody_profiling::flush_device(*wh_sfpu_context->mesh_device);
+        wh_sfpu_context->mesh_device->close();
+    }
     wh_sfpu_context.reset();
 #endif
 }
@@ -1232,6 +1240,16 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     sys.phase_h2d = std::chrono::duration<double>(phase_workload_begin - phase_h2d_begin).count();
     {
         ZoneScopedN("NBody workload");
+        const auto device_count = mesh_device->num_devices();
+        const auto target_elements = px_data.size() / device_count;
+        nbody_profiling::record_workload(
+            *persistent.mesh_device, persistent.workload, "NBodySFPU", sys.N,
+            sys.num_cores / device_count,
+            {target_elements, px_j_data.size(), target_elements, py_j_data.size(),
+             target_elements, pz_j_data.size(), target_elements, vx_j_data.size(),
+             target_elements, vy_j_data.size(), target_elements, vz_j_data.size(), pw_j_data.size()},
+            {target_elements, target_elements, target_elements,
+             target_elements, target_elements, target_elements});
         EnqueueMeshWorkload(cq, persistent.workload, block_for_phase_timers);
     }
     const auto phase_d2h_begin = PhaseClock::now();
@@ -1300,6 +1318,7 @@ void force_calculation(double* __restrict h_par_x, double* __restrict h_par_y, d
     sys.phase_host_postprocess = std::chrono::duration<double>(PhaseClock::now() - phase_post_begin).count();
 
 #if !defined(_WH_MULTIHOST)
+  nbody_profiling::flush_device(*mesh_device);
   mesh_device->close();
 #endif
 }
