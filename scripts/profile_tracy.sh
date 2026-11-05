@@ -23,8 +23,32 @@ output_dir="$(cd "$output_dir" && pwd)"
 export TT_METAL_HOME="$metal_root"
 export PYTHONPATH="$metal_root/tools:$metal_root${PYTHONPATH:+:$PYTHONPATH}"
 export TRACY_NO_WEB_SERVER=1
+"$python_bin" - "$output_dir" "$nbody_root" "$metal_root" "$build_dir" "$particles" "$cycles" <<'PY'
+import json, os, platform, subprocess, sys
+from pathlib import Path
+output, nbody, metal, build, particles, cycles = sys.argv[1:]
+def git(root, *args):
+    result = subprocess.run(['git', '-C', root, *args], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+cache = Path(build) / 'CMakeCache.txt'
+flags = {}
+for line in cache.read_text().splitlines() if cache.exists() else []:
+    if '=' in line and ':' in line.split('=', 1)[0]:
+        key, value = line.split('=', 1)
+        key = key.split(':', 1)[0]
+        if key.startswith('NBODY_') or key in {'ENABLE_TRACY', 'CMAKE_BUILD_TYPE', 'CMAKE_CXX_COMPILER', 'USE_OPENMP'}:
+            flags[key] = value
+metadata = dict(particles=int(particles), cycles=int(cycles), host=platform.platform(),
+                nbody_revision=git(nbody, 'rev-parse', 'HEAD'),
+                nbody_worktree_dirty=bool(git(nbody, 'status', '--porcelain', '--untracked-files=no')),
+                sdk_revision=git(metal, 'rev-parse', 'HEAD'), build_flags=flags,
+                environment={key: os.environ.get(key) for key in
+                             ['OMP_NUM_THREADS', 'TT_METAL_SIMULATOR', 'TT_METAL_SLOW_DISPATCH_MODE',
+                              'TT_METAL_DISABLE_SFPLOADMACRO']})
+(Path(output) / 'profile_manifest.json').write_text(json.dumps(metadata, indent=2) + '\n')
+PY
 cd "$metal_root"
-"$python_bin" -m tracy -o "$output_dir" -r -p \
+"$python_bin" -m tracy -o "$output_dir" -r -p --check-exit-code \
     --tracy-tools-folder "$build_dir/tools/profiler/bin" \
     "$build_dir/nbody_app" --N "$particles" --Ncycle "$cycles" \
     2>&1 | tee "$output_dir/run.log"
@@ -50,6 +74,7 @@ print(reports[0])
 PY
 )"
 cd "$(dirname "$report")"
+"$python_bin" "$nbody_root/scripts/summarize_profile.py" "$output_dir"
 "$perf_bin" "$(basename "$report")" --no-advice --csv perf_report.csv
 echo "Operation CSV: $report"
 echo "Summary: $PWD/perf_report.csv"

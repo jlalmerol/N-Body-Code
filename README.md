@@ -369,6 +369,74 @@ report schema; this is not a passing four-operation device capture or a
 hardware timing measurement. Run the guarded workflow on hardware to verify
 all four device rows with the server SDK.
 
+### CSV summaries for each run
+
+`bash scripts/profile_tracy.sh 1024 3` now also creates a `summary/`
+directory beside the operation report, using the same schema on every
+architecture. Architecture appears only as a metadata value; no
+architecture-specific comparison columns are generated. The runner records
+build flags, source/SDK revisions, dirty-worktree state, and selected runtime
+settings in `profile_manifest.json` for reproducibility.
+
+Existing captures can be summarized without rerunning the application:
+
+```bash
+python scripts/summarize_profile.py \
+  ~/tt-metal/generated/nbody-tracy-20261105-230625
+```
+
+Pass a specific `ops_perf_results_*.csv` if the directory contains several
+captures. The parser needs only Python 3's standard library. Options:
+
+```bash
+python scripts/summarize_profile.py /path/to/ops_perf_results_TIMESTAMP.csv \
+  --skip-warmup 1 --output-dir /path/to/summary
+```
+
+| File in `summary/` | Contents |
+|---|---|
+| `operations.csv` | Each operation's core count, precision, kernel nanoseconds/cycles, and warmup selection. |
+| `summary.csv` | Mean, median, min, max, sample standard deviation and sample count for recorded stage durations, gaps, host phases, EVAL and counters. Units and source are explicit. |
+| `measurements.csv` | Individual included measurements underlying those statistics. |
+| `host_phases.csv` | Host scope samples matched through the enclosing force-call interval. Unmatched scopes are retained but excluded from statistics. |
+| `device_zones.csv` | Paired raw device events per core/RISC, with exact cycle differences and nanoseconds when a positive device-log clock is available. |
+| `device_zone_summary.csv` | Device-zone statistics across included core samples. Mean/min/max/stddev are in cycles; `mean_ns` uses the device-log clock. |
+| `core_summary.csv` | Cycle statistics per core/RISC/zone, for inspecting imbalance. |
+| `app_cycles.csv` | Per-cycle prediction, full EVAL and correction times from `run.log`. |
+| `last_force_phases.csv` | Printed packing/setup/H2D/workload/D2H/postprocess times, explicitly labeled as the last force call only. |
+| `metadata.csv` | Architecture, clock reported by the device log, warmup setting, paths and available manifest data. |
+| `diagnostics.csv` | Missing data, invalid durations, unmatched events and other analysis limitations. |
+
+The first operation on each device is excluded from statistics by default;
+raw sample CSVs retain it with `included=False`. `--skip-warmup 0` includes
+initialization. One sample has no estimated standard deviation, so that
+field stays blank. No utilization or stall percentage is inferred from
+kernel lifetime: hardware counters appear only when actually recorded.
+Stage lifetimes overlap and include waiting; do not add them together.
+
+Useful interaction throughput is `N*(N-1)/kernel_seconds`, excluding self
+pairs and padded work. The per-core value divides this by active cores.
+These fields are emitted only when a single-rank, single-device run is
+established from the log; they are not SFPU instruction throughput or
+TFLOPS. Use `--particles N` for old captures missing N metadata, but keep
+the original `run.log` to verify the execution topology. Old captures
+without optional files still produce available summaries and diagnostics.
+
+Blackhole simulator validation (`ttsim` 1.11.4, N=32, three cycles): the
+application and host Tracy capture completed, and the parser produced four
+operation rows with three included steady-state samples. Host-only operation
+records were exported offline using the SDK report writer, without inserting
+any device measurements. Full device profiling failed in the simulator with
+`UnsupportedFunctionality: noc_cmd_ctrl: write: noc_at_len_be=0`; device timing
+and per-core fields therefore remain unavailable in this test. The runner
+uses `--check-exit-code` so a failing workload stops before report processing.
+
+To run the parser tests:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 For the simulator container, start Colima and the container if needed:
 
 ```bash
